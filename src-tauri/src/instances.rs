@@ -155,6 +155,40 @@ pub fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 列出实例截图（按修改时间新→旧，最多 24 张，仅返回文件名）
+/// 前端通过 ccl://instances/<id>/screenshots/<文件名> 直接加载图片
+#[tauri::command]
+pub fn list_screenshots(app: AppHandle, instance_id: String) -> Result<Vec<String>, String> {
+    let inst = get_instance(&app, &instance_id)?;
+    let dir = std::path::Path::new(&inst.game_dir).join("screenshots");
+    let mut entries: Vec<(std::time::SystemTime, String)> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() {
+                continue;
+            }
+            let ext = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !["png", "jpg", "jpeg", "webp", "gif"].contains(&ext.as_str()) {
+                continue;
+            }
+            let mtime = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                entries.push((mtime, name.to_string()));
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(entries.into_iter().take(24).map(|(_, n)| n).collect())
+}
+
 #[tauri::command]
 pub fn open_instance_dir(app: AppHandle, id: String) -> Result<(), String> {
     let inst = get_instance(&app, &id)?;

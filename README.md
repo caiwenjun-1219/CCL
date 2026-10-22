@@ -41,10 +41,22 @@ CCL/
 │   ├── src/curseforge.rs       # CurseForge API
 │   ├── src/modpack.rs          # .mrpack / CurseForge 整合包导入导出
 │   ├── src/updater.rs          # 云控更新（cclconfig.caiwenjun.top）
+│   ├── src/protocol.rs         # ccl:// 自定义协议（本地文件服务）
 │   └── src/instances.rs        # 实例 CRUD / 模组管理
 ├── cloud-worker/               # 云控后端（Cloudflare Worker）
 └── docs/                       # 技术方案文档
 ```
+
+## ccl:// 自定义协议
+
+参考 VersePc2 的 `wewp://` 设计（`register_uri_scheme_protocol`），CCL 注册了 `ccl` 协议为前端提供本地文件服务。Windows 上经 wry workaround，**前端统一用 `http://ccl.localhost/<路径>` 访问**（Rust 侧收到的是 `ccl://localhost/<路径>`）：
+
+| URL | 说明 |
+|---|---|
+| `http://ccl.localhost/instances/<实例ID>/<相对路径>` | 实例游戏目录（如 `screenshots/xxx.png`） |
+| `http://ccl.localhost/data/<相对路径>` | CCL 数据目录（如 `accounts.json`） |
+
+特性：MIME 推断、HTTP Range（206，大媒体不会整文件读入内存）、CORS、逐段 percent 解码 + `..` 拒绝 + canonicalize 前缀校验（防路径穿越）。前端辅助函数见 `src/lib/tauri.ts` 的 `cclUrl()`，首个用途是首页实例卡片展示最新截图。
 
 ## 本地开发
 

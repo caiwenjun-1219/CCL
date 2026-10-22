@@ -12,7 +12,7 @@ interface ManifestEntry {
 
 export default function VersionsPage() {
   const [params] = useSearchParams();
-  const { instances, showToast } = useApp();
+  const { instances, loadInstances, showToast } = useApp();
   const [instanceId, setInstanceId] = useState(params.get("instance") || "");
   const [manifest, setManifest] = useState<ManifestEntry[]>([]);
   const [installed, setInstalled] = useState<string[]>([]);
@@ -61,6 +61,11 @@ export default function VersionsPage() {
     setProgress({ phase: "开始下载", done: 0, total: 0 });
     try {
       await api.installVersion(instance.game_dir, versionId);
+      // 原版安装后同步到实例，保证「就绪」状态与启动解析一致
+      if (instance.installed_version_id !== versionId) {
+        await api.updateInstance(instance.id, { installed_version_id: versionId });
+        loadInstances();
+      }
       showToast(`${versionId} 安装完成`);
       refreshInstalled();
     } catch (e) {

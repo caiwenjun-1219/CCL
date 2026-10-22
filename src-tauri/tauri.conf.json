@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' data: blob:; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://cclconfig.caiwenjun.top https://api.modrinth.com https://api.curseforge.com https://bmclapi2.bangbang93.com https://piston-meta.mojang.com https://piston-data.mojang.com https://launcher.mojang.com https://libraries.minecraft.net https://resources.download.minecraft.net https://maven.neoforged.net https://api.adoptium.net https://login.microsoftonline.com https://user.auth.xboxlive.com https://xsts.auth.xboxlive.com https://api.minecraftservices.com"
+      "csp": "default-src 'self' data: blob:; img-src 'self' data: https: http://ccl.localhost; media-src 'self' data: blob: http://ccl.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data: http://ccl.localhost; connect-src 'self' ipc: http://ipc.localhost http://ccl.localhost https://cclconfig.caiwenjun.top https://api.modrinth.com https://api.curseforge.com https://bmclapi2.bangbang93.com https://piston-meta.mojang.com https://piston-data.mojang.com https://launcher.mojang.com https://libraries.minecraft.net https://resources.download.minecraft.net https://maven.neoforged.net https://api.adoptium.net https://login.microsoftonline.com https://user.auth.xboxlive.com https://xsts.auth.xboxlive.com https://api.minecraftservices.com"
     }
   },
   "bundle": {

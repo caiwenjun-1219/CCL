@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Play, Square, FolderOpen, Terminal, Package, Plus, Loader2 } from "lucide-react";
 import { useApp } from "../store/app";
-import { api } from "../lib/tauri";
+import { api, cclUrl } from "../lib/tauri";
 
 const LOADER_LABEL: Record<string, string> = {
   vanilla: "原版",
@@ -14,16 +14,41 @@ const LOADER_LABEL: Record<string, string> = {
 
 export default function HomePage() {
   const navigate = useNavigate();
-  const { instances, accounts, running, setRunning, appendLog, showToast } = useApp();
+  const { instances, accounts, running, setRunning, appendLog, showToast, loadAccounts } = useApp();
   const [launching, setLaunching] = useState<string | null>(null);
   const [logFor, setLogFor] = useState<string | null>(null);
   const logs = useApp((s) => s.logs);
+  // 各实例最新截图（经 ccl:// 协议直接加载本地图片）
+  const [shots, setShots] = useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    let alive = true;
+    if (instances.length === 0) return;
+    Promise.all(
+      instances.map((i) =>
+        api
+          .listScreenshots(i.id)
+          .then((list) => [i.id, list] as const)
+          .catch(() => [i.id, [] as string[]] as const)
+      )
+    ).then((pairs) => {
+      if (!alive) return;
+      const m: Record<string, string[]> = {};
+      for (const [id, list] of pairs) m[id] = list;
+      setShots(m);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [instances]);
 
   const play = async (id: string) => {
     setLaunching(id);
     try {
       const info = await api.launchInstance(id, null);
       setRunning(id, true);
+      // 启动可能自动创建了离线账户，刷新列表保证账户页/提示卡同步
+      if (accounts.length === 0) loadAccounts();
       showToast(`已启动 ${info.version_id}（Java ${info.java_major}）`);
     } catch (e) {
       showToast(String(e), "bad");
@@ -113,6 +138,23 @@ export default function HomePage() {
                   <span className="tag tag-orange">未安装</span>
                 )}
               </div>
+
+              {(shots[inst.id] || []).length > 0 && (
+                <div className="flex gap-1.5 mb-4">
+                  {(shots[inst.id] || []).slice(0, 4).map((name) => (
+                    <img
+                      key={name}
+                      src={cclUrl(
+                        `instances/${inst.id}/screenshots/${encodeURIComponent(name)}`
+                      )}
+                      alt=""
+                      loading="lazy"
+                      title={name}
+                      className="w-10 h-10 rounded-lg object-cover bg-ccl-bg border border-ccl-border"
+                    />
+                  ))}
+                </div>
+              )}
 
               <div className="flex gap-2 mt-auto">
                 {isRunning ? (

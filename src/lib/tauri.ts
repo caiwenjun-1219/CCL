@@ -158,6 +158,8 @@ export const api = {
   ) => invoke<Instance>("update_instance", { id, patch }),
   deleteInstance: (id: string) => invoke("delete_instance", { id }),
   openInstanceDir: (id: string) => invoke("open_instance_dir", { id }),
+  listScreenshots: (instanceId: string) =>
+    invoke<string[]>("list_screenshots", { instanceId }),
 
   // 模组
   listMods: (instanceId: string) => invoke<ModInfo[]>("list_mods", { instanceId }),
@@ -259,6 +261,19 @@ export function onModpackProgress(cb: (p: { phase: string; done: number; total: 
 
 export function onUpdateDownload(cb: (p: { loaded: number; total: number }) => void) {
   return listen<{ loaded: number; total: number }>("update-download", (e) => cb(e.payload));
+}
+
+/**
+ * 构造 CCL 自定义协议 URL（本地文件服务，见 src-tauri/src/protocol.rs）。
+ * Windows 上自定义协议经 wry workaround 映射为 http://<协议名>.localhost/...，
+ * 因此前端统一用 http://ccl.localhost/<路径> 访问（Rust 侧收到的是 ccl://localhost/...）。
+ * 支持两类路径：
+ *   cclUrl(`instances/${instanceId}/screenshots/x.png`)  → 实例游戏目录
+ *   cclUrl(`data/settings.json`)                        → CCL 数据目录
+ * 传入的 fileName 等片段建议先 encodeURIComponent。
+ */
+export function cclUrl(path: string): string {
+  return `http://ccl.localhost/${path.replace(/^\/+/, "")}`;
 }
 
 export function fmtSize(n: number): string {

@@ -11,6 +11,7 @@ mod launcher;
 mod minecraft;
 mod modpack;
 mod modrinth;
+mod protocol;
 mod settings;
 mod updater;
 
@@ -23,6 +24,9 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // ccl:// 自定义协议：为前端提供本地文件服务（实例截图/数据目录文件），
+        // 支持 Range 与 CORS，详见 protocol.rs
+        .register_uri_scheme_protocol("ccl", protocol::handle)
         .manage(GameProcesses(Arc::new(std::sync::Mutex::new(HashMap::new()))))
         .invoke_handler(tauri::generate_handler![
             // 设置
@@ -47,6 +51,7 @@ fn main() {
             instances::update_instance,
             instances::delete_instance,
             instances::open_instance_dir,
+            instances::list_screenshots,
             instances::list_mods,
             instances::toggle_mod,
             instances::delete_mod,

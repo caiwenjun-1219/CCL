@@ -54,7 +54,9 @@ fn rule_allows(value: &Value) -> bool {
     match value.get("rules") {
         None => true,
         Some(Value::Array(rules)) => {
-            let mut allowed = true;
+            // 规范：存在 rules 时默认不允许，由匹配的 rule 决定
+            // （修复 --demo / -XstartOnFirstThread / quickPlay 等 features/os 参数未被过滤的问题）
+            let mut allowed = false;
             for rule in rules {
                 let action = rule.get("action").and_then(|a| a.as_str()).unwrap_or("allow");
                 let os_match = rule
@@ -113,6 +115,11 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, vjson: &Value) -> Strin
                 continue;
             }
             let name = lib.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            // 新格式 natives（org.lwjgl:lwjgl:3.3.3:natives-windows）只含 dll，不进 classpath
+            let name_suffix = name.split(':').last().unwrap_or("");
+            if name_suffix.starts_with("natives-") {
+                continue;
+            }
             let artifact_path = lib
                 .get("downloads")
                 .and_then(|d| d.get("artifact"))
@@ -188,17 +195,38 @@ pub async fn launch_instance(
     let instance = crate::instances::get_instance(&app, &instance_id)?;
     let s = settings::load(&app);
 
-    // 账户（未指定则用第一个账户）
-    let account: Account = match account_uuid {
-        Some(u) => accounts_list(&app)
-            .into_iter()
-            .find(|a| a.uuid == u)
-            .ok_or("账户不存在")?,
-        None => accounts_list(&app)
-            .into_iter()
-            .next()
-            .ok_or("没有可用账户，请先在账户页添加（离线模式也行）")?,
+    // 账户：指定 UUID → 该账户；否则第一个账户；一个都没有 → 自动创建离线账户（不打断启动）
+    let mut auto_created = false;
+    let account: Account = {
+        let accounts = accounts_list(&app);
+        match account_uuid {
+            Some(u) => accounts
+                .iter()
+                .find(|a| a.uuid == u)
+                .cloned()
+                .or_else(|| accounts.first().cloned())
+                .unwrap_or_else(|| {
+                    auto_created = true;
+                    make_offline_account(&app)
+                }),
+            None => accounts.first().cloned().unwrap_or_else(|| {
+                auto_created = true;
+                make_offline_account(&app)
+            }),
+        }
     };
+    if auto_created {
+        let _ = app.emit(
+            "game-log",
+            GameLogEvent {
+                instance_id: instance_id.clone(),
+                line: format!(
+                    "[CCL] 未检测到账户，已自动创建离线账户 {}（可在账户页管理）",
+                    account.name
+                ),
+            },
+        );
+    }
 
     // 令牌将过期则刷新
     let account = if account.account_type == "msa"
@@ -267,10 +295,22 @@ pub async fn launch_instance(
     vars.insert("natives_directory".into(), natives_dir.to_string_lossy().to_string());
     vars.insert("classpath".into(), classpath.clone());
     vars.insert("version".into(), version_id.clone());
+    vars.insert("version_name".into(), version_id.clone());
+    // 初始窗口尺寸：取启动器窗口尺寸，失败则回退 854x480
+    let (rw, rh) = app
+        .get_webview_window("main")
+        .and_then(|w| w.inner_size().ok())
+        .map(|s| (s.width.to_string(), s.height.to_string()))
+        .unwrap_or_else(|| ("854".into(), "480".into()));
+    vars.insert("resolution_width".into(), rw);
+    vars.insert("resolution_height".into(), rh);
     vars.insert("clientid".into(), "ccl-client".into());
     vars.insert("auth_xuid".into(), String::new());
     vars.insert("user_properties".into(), "{}".into());
     vars.insert("quickPlayPath".into(), String::new());
+    vars.insert("quickPlaySingleplayer".into(), String::new());
+    vars.insert("quickPlayMultiplayer".into(), String::new());
+    vars.insert("quickPlayRealms".into(), String::new());
     vars.insert("launcher_name".into(), "CwjCraftLauncher".into());
     vars.insert("launcher_version".into(), env!("CARGO_PKG_VERSION").into());
 
@@ -335,6 +375,29 @@ pub async fn launch_instance(
 
     let mut child = cmd.spawn().map_err(|e| format!("启动进程失败: {e}"))?;
 
+    // 启动诊断日志：完整命令行 + 退出码，便于排查启动失败
+    {
+        let dbg_log = game_dir.join("ccl-launch.log");
+        let mut line = format!(
+            "[{}] java={} cwd={}\n  {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            java_info.path,
+            game_dir.display(),
+            std::iter::once(java_info.path.as_str())
+                .chain(jvm_args.iter().map(|s| s.as_str()))
+                .chain(std::iter::once(parsed.main_class.as_str()))
+                .chain(game_args.iter().map(|s| s.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&dbg_log) {
+            let _ = f.write_all(line.as_bytes());
+        }
+        line.clear();
+        let _ = line;
+    }
+
     // 日志流
     if let Some(out) = child.stdout.take() {
         let iid = instance_id.clone();
@@ -389,7 +452,26 @@ pub async fn launch_instance(
             }
             std::thread::sleep(Duration::from_millis(500));
         };
-        let _ = app_exit.emit("game-exit", GameExitEvent { instance_id: iid3, code });
+        let _ = app_exit.emit("game-exit", GameExitEvent { instance_id: iid3.clone(), code });
+        // 退出码追加到诊断日志
+        {
+            use std::io::Write;
+            if let Some(dir) = app_exit.path().app_data_dir().ok() {
+                // 从进程表反查 game_dir 不可靠，直接读实例数据
+                let _ = dir;
+            }
+            if let Ok(inst) = crate::instances::get_instance(&app_exit, &iid3) {
+                let dbg_log = std::path::Path::new(&inst.game_dir).join("ccl-launch.log");
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&dbg_log) {
+                    let _ = writeln!(
+                        f,
+                        "[{}] 进程退出 code={:?}",
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                        code
+                    );
+                }
+            }
+        }
     });
 
     processes.0.lock().unwrap().insert(instance_id.clone(), child);
@@ -430,4 +512,18 @@ pub fn is_instance_running(
 
 fn accounts_list(app: &AppHandle) -> Vec<Account> {
     auth::load_accounts(app)
+}
+
+/// 没有任何账户时自动创建离线账户：优先取系统用户名（过滤非法字符），失败则 Steve
+fn make_offline_account(app: &AppHandle) -> Account {
+    let raw = std::env::var("USERNAME").unwrap_or_default();
+    let candidate: String = raw
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .take(16)
+        .collect();
+    let name = if candidate.is_empty() { "Steve".to_string() } else { candidate };
+    auth::offline_login(app.clone(), name)
+        .or_else(|_| auth::offline_login(app.clone(), "Steve".to_string()))
+        .expect("创建离线账户失败")
 }
