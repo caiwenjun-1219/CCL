@@ -1,0 +1,135 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ccl-bg: #0f1420;
+  --color-ccl-panel: #171e2e;
+  --color-ccl-panel2: #1c2438;
+  --color-ccl-border: #232c42;
+  --color-ccl-accent: #4c9a56;
+  --color-ccl-accent2: #5cb268;
+  --color-ccl-text: #e6e9f0;
+  --color-ccl-muted: #8b93a7;
+  --color-ccl-danger: #c05656;
+  --color-ccl-warn: #d0a03c;
+  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: Consolas, "Cascadia Code", "Courier New", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-ccl-bg);
+  color: var(--color-ccl-text);
+  font-family: var(--font-sans);
+  overflow: hidden;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3450;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input,
+textarea,
+select {
+  user-select: text;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--color-ccl-accent);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--color-ccl-accent2);
+}
+.btn-ghost {
+  background: transparent;
+  border-color: #2a3450;
+  color: #aeb6c8;
+}
+.btn-ghost:hover {
+  border-color: var(--color-ccl-accent);
+  color: #fff;
+}
+.btn-danger {
+  background: transparent;
+  border-color: #6e3535;
+  color: #e08c8c;
+}
+.btn-danger:hover {
+  background: rgba(140, 60, 60, 0.2);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field {
+  width: 100%;
+  background: #0f1420;
+  border: 1px solid #2a3450;
+  border-radius: 8px;
+  color: var(--color-ccl-text);
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+}
+.field:focus {
+  border-color: var(--color-ccl-accent);
+}
+
+.card {
+  background: var(--color-ccl-panel);
+  border: 1px solid var(--color-ccl-border);
+  border-radius: 14px;
+  padding: 20px;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #223052;
+  color: #9fb4ff;
+  font-weight: 600;
+}
+.tag-green {
+  background: rgba(63, 138, 77, 0.2);
+  color: #7fd08f;
+}
+.tag-gray {
+  background: #232c42;
+  color: #8b93a7;
+}
+.tag-orange {
+  background: rgba(208, 160, 60, 0.18);
+  color: #e0c06a;
+}

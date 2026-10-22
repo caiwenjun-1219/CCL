@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Cloud worker
+cloud-worker/node_modules/
+cloud-worker/.wrangler/
+cloud-worker/.dev.vars
+cloud-worker/package-lock.json
+
+# 探测脚本（本地工具）
+probe_mirrors*.py
+
+# 构建产物
+*.exe
+*.msi
+bundle/

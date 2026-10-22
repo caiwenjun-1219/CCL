@@ -1,0 +1,15 @@
+{
+  "name": "ccl-cloud-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cwj Craft Launcher cloud control backend (Cloudflare Worker)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.99.0",
+    "@cloudflare/workers-types": "^4.20250109.0"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "ccl",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Cwj Craft Launcher - a Minecraft launcher built with Tauri",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-opener": "^2.2.0",
+    "@tauri-apps/plugin-store": "^2.2.0",
+    "lucide-react": "^0.469.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.1.1",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.5",
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tailwindcss": "^4.1.5",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  }
+}

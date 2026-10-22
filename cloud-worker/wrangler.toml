@@ -1,0 +1,20 @@
+name = "ccl-config"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+
+# KV 命名空间：存储云控配置与面板密码哈希
+# 创建命令：npx wrangler kv:namespace create CCL_KV
+[[kv_namespaces]]
+binding = "CCL_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# R2 存储桶：存放启动器更新安装包
+# 创建命令：npx wrangler r2 bucket create ccl-updates
+[[r2_buckets]]
+binding = "CCL_BUCKET"
+bucket_name = "ccl-updates"
+
+# 自定义域名（域名托管在 Cloudflare 后，在 Worker 设置里绑定，或取消下面注释用 route）
+# routes = [
+#   { pattern = "cclconfig.caiwenjun.top", custom_domain = true }
+# ]
