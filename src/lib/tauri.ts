@@ -105,6 +105,34 @@ export interface CfModHit {
   date_modified: string;
 }
 
+export interface ManifestEntry {
+  id: string;
+  vtype: string;
+  url: string;
+  /** 版本 JSON 最后修改时间（ISO 8601） */
+  time: string;
+  /** 正式发布时间（ISO 8601） */
+  release_time: string;
+}
+
+export interface TestStep {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface VersionTestReport {
+  version_id: string;
+  ok: boolean;
+  steps: TestStep[];
+  /** 测试过程累计下载体积（字节） */
+  total_size: number;
+  /** 耗时（毫秒） */
+  elapsed_ms: number;
+  /** 测试用的隔离目录（失败时保留以便排查） */
+  test_dir: string;
+}
+
 export const api = {
   // 设置
   getSettings: () => invoke<AppSettings>("get_settings"),
@@ -118,9 +146,9 @@ export const api = {
     invoke<JavaInfo>("resolve_java", { mcVersion }),
 
   // Minecraft 版本
-  versionManifest: () => invoke<{ id: string; vtype: string; url: string }[]>(
-    "mc_version_manifest"
-  ),
+  versionManifest: () => invoke<ManifestEntry[]>("mc_version_manifest"),
+  testVersion: (versionId: string) =>
+    invoke<VersionTestReport>("mc_test_version", { versionId }),
   localVersions: (gameDir: string) =>
     invoke<string[]>("mc_local_versions", { gameDir }),
   installVersion: (gameDir: string, versionId: string) =>
@@ -248,6 +276,15 @@ export function onGameExit(cb: (e: GameExitEvent) => void) {
 export function onInstallProgress(cb: (p: { phase: string; done: number; total: number }) => void) {
   return listen<{ phase: string; done: number; total: number }>(
     "mc-install-progress",
+    (e) => cb(e.payload)
+  );
+}
+
+export function onTestProgress(
+  cb: (p: { version_id: string; phase: string; done: number; total: number }) => void
+) {
+  return listen<{ version_id: string; phase: string; done: number; total: number }>(
+    "mc-test-progress",
     (e) => cb(e.payload)
   );
 }

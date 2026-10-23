@@ -227,8 +227,8 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                   key={l.id}
                   className={`text-left px-3.5 py-2.5 rounded-lg border transition-colors ${
                     loader === l.id
-                      ? "border-ccl-accent bg-[#2f6b3a]/20"
-                      : "border-ccl-border hover:border-[#3a4a6e]"
+                      ? "border-ccl-accent bg-[#e4f3e4]"
+                      : "border-ccl-border hover:border-ccl-accent/50"
                   }`}
                   onClick={() => setLoader(l.id)}
                 >
@@ -261,7 +261,7 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                   ))}
                 </select>
                 {loaderVersions.length === 0 && !loadingVersions && (
-                  <p className="text-[12px] text-[#e0c06a] mt-2">
+                  <p className="text-[12px] text-ccl-warn mt-2">
                     该 MC 版本暂无 {loader} 版本，请返回上一步换版本或换加载器
                   </p>
                 )}

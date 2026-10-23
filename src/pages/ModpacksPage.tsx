@@ -52,8 +52,8 @@ export default function ModpacksPage() {
 
       <div className="card mb-5">
         <div className="flex items-start gap-4">
-          <div className="w-12 h-12 rounded-xl bg-[#223052] flex items-center justify-center shrink-0">
-            <Package size={22} className="text-[#9fb4ff]" />
+          <div className="w-12 h-12 rounded-xl bg-ccl-accent/10 border border-ccl-accent/25 flex items-center justify-center shrink-0">
+            <Package size={22} className="text-ccl-accent" />
           </div>
           <div className="flex-1">
             <h2 className="text-[14px] font-bold mb-1">导入整合包</h2>
@@ -77,7 +77,7 @@ export default function ModpacksPage() {
                     </span>
                   )}
                 </div>
-                <div className="h-1.5 bg-[#232c42] rounded overflow-hidden">
+                <div className="h-1.5 bg-[#e6eaef] rounded overflow-hidden">
                   <div
                     className="h-full bg-ccl-accent transition-all"
                     style={{

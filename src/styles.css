@@ -1,17 +1,18 @@
 @import "tailwindcss";
 
+/* PCL（Plain Craft Launcher）风格浅色主题 */
 @theme {
-  --color-ccl-bg: #0f1420;
-  --color-ccl-panel: #171e2e;
-  --color-ccl-panel2: #1c2438;
-  --color-ccl-border: #232c42;
-  --color-ccl-accent: #4c9a56;
-  --color-ccl-accent2: #5cb268;
-  --color-ccl-text: #e6e9f0;
-  --color-ccl-muted: #8b93a7;
-  --color-ccl-danger: #c05656;
-  --color-ccl-warn: #d0a03c;
-  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --color-ccl-bg: #edf0f4;
+  --color-ccl-panel: #ffffff;
+  --color-ccl-panel2: #f5f7fa;
+  --color-ccl-border: #dde3ea;
+  --color-ccl-accent: #4e9e4e;
+  --color-ccl-accent2: #63b56a;
+  --color-ccl-text: #2b2f36;
+  --color-ccl-muted: #8a919e;
+  --color-ccl-danger: #c25b5b;
+  --color-ccl-warn: #b9862f;
+  --font-sans: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   --font-mono: Consolas, "Cascadia Code", "Courier New", monospace;
 }
 
@@ -35,8 +36,11 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2a3450;
+  background: #c8cfd8;
   border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b3bcc8;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -48,15 +52,16 @@ select {
   user-select: text;
 }
 
+/* ---- PCL 风格按钮：绿色主按钮、白底描边次按钮 ---- */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-radius: 9px;
+  border-radius: 6px;
   font-size: 13px;
   font-weight: 600;
-  padding: 8px 16px;
+  padding: 7px 14px;
   cursor: pointer;
   border: 1px solid transparent;
   transition: all 0.15s;
@@ -70,34 +75,35 @@ select {
   background: var(--color-ccl-accent2);
 }
 .btn-ghost {
-  background: transparent;
-  border-color: #2a3450;
-  color: #aeb6c8;
+  background: #ffffff;
+  border-color: var(--color-ccl-border);
+  color: #5a6270;
 }
 .btn-ghost:hover {
   border-color: var(--color-ccl-accent);
-  color: #fff;
+  color: var(--color-ccl-accent);
 }
 .btn-danger {
-  background: transparent;
-  border-color: #6e3535;
-  color: #e08c8c;
+  background: #ffffff;
+  border-color: #e3c4c4;
+  color: var(--color-ccl-danger);
 }
 .btn-danger:hover {
-  background: rgba(140, 60, 60, 0.2);
+  background: #fdf3f3;
+  border-color: var(--color-ccl-danger);
 }
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
 .field {
   width: 100%;
-  background: #0f1420;
-  border: 1px solid #2a3450;
-  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid var(--color-ccl-border);
+  border-radius: 6px;
   color: var(--color-ccl-text);
-  padding: 8px 12px;
+  padding: 7px 11px;
   font-size: 13px;
   outline: none;
 }
@@ -105,31 +111,32 @@ select {
   border-color: var(--color-ccl-accent);
 }
 
+/* ---- PCL 风格卡片：白底、细边框、小圆角 ---- */
 .card {
   background: var(--color-ccl-panel);
   border: 1px solid var(--color-ccl-border);
-  border-radius: 14px;
-  padding: 20px;
+  border-radius: 8px;
+  padding: 16px;
 }
 
 .tag {
   display: inline-block;
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 6px;
-  background: #223052;
-  color: #9fb4ff;
+  border-radius: 4px;
+  background: #eef2f7;
+  color: #5a6270;
   font-weight: 600;
 }
 .tag-green {
-  background: rgba(63, 138, 77, 0.2);
-  color: #7fd08f;
+  background: #e4f3e4;
+  color: #3e7d3e;
 }
 .tag-gray {
-  background: #232c42;
-  color: #8b93a7;
+  background: #eef0f3;
+  color: #8a919e;
 }
 .tag-orange {
-  background: rgba(208, 160, 60, 0.18);
-  color: #e0c06a;
+  background: #faf3e2;
+  color: #9a7223;
 }

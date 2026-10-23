@@ -16,9 +16,38 @@ use crate::settings;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub id: String,
-    #[serde(rename = "type")]
+    /// 清单里字段名是 type；序列化给前端时保持 vtype（前端契约）
+    #[serde(alias = "type")]
     pub vtype: String,
     pub url: String,
+    /// 版本 JSON 最后修改时间（ISO 8601）
+    #[serde(default)]
+    pub time: String,
+    /// 正式发布时间（ISO 8601，清单字段名 releaseTime）
+    #[serde(default, alias = "releaseTime")]
+    pub release_time: String,
+}
+
+/// 单个版本的「单独测试」结果
+#[derive(Debug, Clone, Serialize)]
+pub struct TestStep {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// 单个版本的完整测试报告
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionTestReport {
+    pub version_id: String,
+    pub ok: bool,
+    pub steps: Vec<TestStep>,
+    /// 测试过程累计下载体积（字节）
+    pub total_size: u64,
+    /// 耗时（毫秒）
+    pub elapsed_ms: u128,
+    /// 测试用的隔离目录（失败时保留以便排查）
+    pub test_dir: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,18 +141,40 @@ pub async fn mc_version_manifest(app: AppHandle) -> Result<Vec<ManifestEntry>, S
     );
     let mut last_err = String::new();
     for url in urls {
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let manifest: VersionManifest =
-                    resp.json().await.map_err(|e| format!("解析版本清单失败: {e}"))?;
-                let _ = app.emit(
-                    "mc-latest",
-                    json!({ "release": manifest.latest.release, "snapshot": manifest.latest.snapshot }),
-                );
-                return Ok(manifest.versions);
+        // BMCLAPI 的清单走签名 CDN 302，偶发返回空 body——同源重试可拿到新签名
+        for attempt in 0..2 {
+            match client
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(60))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let text = match resp.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            last_err = format!("读取响应失败: {e}");
+                            continue;
+                        }
+                    };
+                    if text.trim().is_empty() {
+                        last_err = format!("{url} 返回空内容（第 {} 次）", attempt + 1);
+                        continue;
+                    }
+                    match serde_json::from_str::<VersionManifest>(&text) {
+                        Ok(manifest) => {
+                            let _ = app.emit(
+                                "mc-latest",
+                                json!({ "release": manifest.latest.release, "snapshot": manifest.latest.snapshot }),
+                            );
+                            return Ok(manifest.versions);
+                        }
+                        Err(e) => last_err = format!("解析版本清单失败: {e}"),
+                    }
+                }
+                Ok(resp) => last_err = format!("HTTP {}", resp.status()),
+                Err(e) => last_err = e.to_string(),
             }
-            Ok(resp) => last_err = format!("HTTP {}", resp.status()),
-            Err(e) => last_err = e.to_string(),
         }
     }
     Err(format!("获取版本清单失败: {last_err}"))
@@ -161,23 +212,44 @@ async fn fetch_version_json(client: &reqwest::Client, url: &str, prefer: bool) -
     let urls = downloader::urls_with_setting(url, prefer);
     let mut last_err = String::new();
     for u in urls {
-        match client.get(&u).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                return resp.json().await.map_err(|e| format!("解析版本 JSON 失败: {e}"))
+        // 签名 CDN 偶发空 body：同源重试拿新签名
+        for attempt in 0..2 {
+            match client
+                .get(&u)
+                .timeout(std::time::Duration::from_secs(45))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let text = match resp.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            last_err = format!("读取响应失败: {e}");
+                            continue;
+                        }
+                    };
+                    if text.trim().is_empty() {
+                        last_err = format!("{u} 返回空内容（第 {} 次）", attempt + 1);
+                        continue;
+                    }
+                    return serde_json::from_str(&text).map_err(|e| format!("解析版本 JSON 失败: {e}"));
+                }
+                Ok(resp) => last_err = format!("HTTP {}", resp.status()),
+                Err(e) => last_err = e.to_string(),
             }
-            Ok(resp) => last_err = format!("HTTP {}", resp.status()),
-            Err(e) => last_err = e.to_string(),
         }
     }
     Err(format!("获取版本 JSON 失败({url}): {last_err}"))
 }
 
 /// 安装一个完整版本（json 已合并好）：client jar / libraries / assets / natives
+/// full_assets=false 时只抽样下载少量资源对象（用于版本单独测试，避免全量下载）
 async fn install_version(
     app: &AppHandle,
     game_dir: &Path,
     version_id: &str,
     vjson: &Value,
+    full_assets: bool,
 ) -> Result<(), String> {
     let client = downloader::http_client();
     let prefer = prefer_mirror(app);
@@ -213,6 +285,9 @@ async fn install_version(
     );
     let mut lib_tasks: Vec<DlTask> = vec![];
     let mut native_jars: Vec<PathBuf> = vec![];
+    // 1.13 / 20w06a 等版本 JSON 会把同一库列两份（仅 rules 不同），
+    // 若不去重会产生两个任务写同一文件：并发截断/删除导致 SHA1 读取失败。
+    let mut seen_dests: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for (i, lib) in v.libraries.iter().enumerate() {
         if !library_allowed(lib) {
             continue;
@@ -230,6 +305,16 @@ async fn install_version(
             }
             let path = artifact.get("path").and_then(|p| p.as_str()).unwrap_or("");
             let sha1 = artifact.get("sha1").and_then(|s| s.as_str()).map(|s| s.to_string());
+            // 合成库（如 Quilt maven 兜底）可携带 fallbacks 候选地址列表
+            let extra_fallbacks: Vec<String> = artifact
+                .get("fallbacks")
+                .and_then(|f| f.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|u| u.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
             let dest = if path.is_empty() {
                 // 用 name 推导 path: group:artifact:version
                 lib_path.join(name_to_path(lib.get("name").and_then(|n| n.as_str()).unwrap_or("")))
@@ -241,6 +326,11 @@ async fn install_version(
             if name_suffix.starts_with("natives-") && name_suffix == current_native_suffix() {
                 native_jars.push(dest.clone());
             }
+            if !seen_dests.insert(dest.clone()) {
+                continue; // 同路径已安排下载，跳过重复条目
+            }
+            let mut fallbacks = extra_fallbacks;
+            fallbacks.extend(downloader::urls_with_setting(url, prefer));
             lib_tasks.push(
                 DlTask::new(
                     &format!("lib-{version_id}-{i}"),
@@ -248,7 +338,7 @@ async fn install_version(
                     url,
                     &dest,
                 )
-                .with_fallbacks(downloader::urls_with_setting(url, prefer))
+                .with_fallbacks(fallbacks)
                 .with_sha1(sha1),
             );
         }
@@ -262,6 +352,9 @@ async fn install_version(
                     let path = nat.get("path").and_then(|p| p.as_str()).unwrap_or("");
                     if !url.is_empty() && !path.is_empty() {
                         let dest = lib_path.join(path.replace('\\', "/"));
+                        if !seen_dests.insert(dest.clone()) {
+                            continue; // 同路径已安排下载，跳过重复条目
+                        }
                         native_jars.push(dest.clone());
                         lib_tasks.push(
                             DlTask::new(
@@ -283,7 +376,9 @@ async fn install_version(
         InstallProgress { phase: "libraries".into(), done: v.libraries.len() as u64, total: v.libraries.len() as u64 },
     );
 
-    // ---- natives 解压
+    // ---- natives 解压（去重：同一 jar 可能被重复列出）
+    native_jars.sort();
+    native_jars.dedup();
     let natives_dir = version_dir.join("natives");
     std::fs::create_dir_all(&natives_dir).map_err(|e| e.to_string())?;
     for jar in &native_jars {
@@ -314,8 +409,14 @@ async fn install_version(
             "mc-install-progress",
             InstallProgress { phase: "assets".into(), done: 0, total: objects.len() as u64 },
         );
+        // 测试模式只抽样前若干个对象验证资源 CDN 通路；正式安装才全量下载
+        let sample: Vec<(&String, &AssetObject)> = if full_assets {
+            objects.clone()
+        } else {
+            objects.iter().take(8).copied().collect()
+        };
         let mut asset_tasks: Vec<DlTask> = vec![];
-        for (name, obj) in objects {
+        for (name, obj) in sample {
             let dest = game_dir.join("assets").join("objects").join(&obj.hash[..2]).join(&obj.hash);
             if dest.exists() {
                 continue;
@@ -459,8 +560,203 @@ pub async fn mc_install_version(
     }
     let version_url = version_url.ok_or(format!("定位版本失败: {last_err}"))?;
     let vjson = fetch_version_json(&client, &version_url, prefer).await?;
-    install_version(&app, Path::new(&game_dir), &version_id, &vjson).await?;
+    install_version(&app, Path::new(&game_dir), &version_id, &vjson, true).await?;
     Ok(version_id)
+}
+
+/// 递归统计目录体积
+fn dir_size(p: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(p) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                total += dir_size(&path);
+            } else if let Ok(m) = e.metadata() {
+                total += m.len();
+            }
+        }
+    }
+    total
+}
+
+/// 统计目录内指定扩展名的文件数
+fn count_files(p: &Path, ext: &str) -> usize {
+    let mut n = 0usize;
+    if let Ok(entries) = std::fs::read_dir(p) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                n += count_files(&path, ext);
+            } else if path.extension().and_then(|x| x.to_str()) == Some(ext) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// 单个版本「单独测试」：在隔离临时目录中完整走一遍安装管线并逐项校验，
+/// 不污染任何实例。测试项：版本清单定位 / 版本 JSON / 客户端 jar(SHA1) /
+/// 依赖库 / natives / 资源索引与资源 CDN 抽样。
+#[tauri::command]
+pub async fn mc_test_version(
+    app: AppHandle,
+    version_id: String,
+) -> Result<VersionTestReport, String> {
+    let started = std::time::Instant::now();
+    let mut steps: Vec<TestStep> = vec![];
+    let client = downloader::http_client();
+    let prefer = prefer_mirror(&app);
+
+    let done_report = |steps: Vec<TestStep>, total_size: u64, test_dir: &Path, keep: bool| {
+        let ok = steps.iter().all(|s| s.ok);
+        if !keep {
+            let _ = std::fs::remove_dir_all(test_dir);
+        }
+        VersionTestReport {
+            version_id: version_id.clone(),
+            ok,
+            steps,
+            total_size,
+            elapsed_ms: started.elapsed().as_millis(),
+            test_dir: test_dir.display().to_string(),
+        }
+    };
+
+    // 1. 定位版本（镜像链回退）
+    let manifest_urls = downloader::urls_with_setting(
+        "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
+        prefer,
+    );
+    let mut version_url = None;
+    let mut last_err = String::new();
+    for url in manifest_urls {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                match resp.json::<VersionManifest>().await {
+                    Ok(manifest) => {
+                        if let Some(entry) = manifest.versions.iter().find(|v| v.id == version_id) {
+                            version_url = Some(entry.url.clone());
+                            break;
+                        }
+                        last_err = format!("清单中不存在版本 {version_id}");
+                    }
+                    Err(e) => last_err = format!("解析版本清单失败: {e}"),
+                }
+            } else {
+                last_err = format!("HTTP {}", resp.status());
+            }
+        }
+    }
+    let version_url = match version_url {
+        Some(u) => u,
+        None => {
+            steps.push(TestStep { name: "版本清单定位".into(), ok: false, detail: last_err });
+            let empty = std::env::temp_dir().join("ccl-test-empty");
+            return Ok(done_report(steps, 0, &empty, false));
+        }
+    };
+    steps.push(TestStep {
+        name: "版本清单定位".into(),
+        ok: true,
+        detail: format!("{}（{}）", version_url, if prefer { "镜像优先" } else { "官方源" }),
+    });
+
+    // 2. 版本 JSON
+    let vjson = match fetch_version_json(&client, &version_url, prefer).await {
+        Ok(j) => j,
+        Err(e) => {
+            steps.push(TestStep { name: "版本 JSON".into(), ok: false, detail: e });
+            let empty = std::env::temp_dir().join("ccl-test-empty");
+            return Ok(done_report(steps, 0, &empty, false));
+        }
+    };
+    let vtype = vjson.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+    steps.push(TestStep {
+        name: "版本 JSON".into(),
+        ok: true,
+        detail: format!("解析成功（type={vtype}）"),
+    });
+
+    // 3. 隔离临时目录中执行安装（测试模式：资源对象只抽样）
+    let safe_id: String = version_id
+        .chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .collect();
+    let test_dir = std::env::temp_dir().join(format!("ccl-test-{safe_id}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&test_dir);
+    if let Err(e) = std::fs::create_dir_all(&test_dir) {
+        steps.push(TestStep { name: "测试目录".into(), ok: false, detail: e.to_string() });
+        let empty = std::env::temp_dir().join("ccl-test-empty");
+        return Ok(done_report(steps, 0, &empty, false));
+    }
+
+    let _ = app.emit(
+        "mc-test-progress",
+        json!({ "version_id": version_id, "phase": "安装中", "done": 0, "total": 0 }),
+    );
+
+    match install_version(&app, &test_dir, &version_id, &vjson, false).await {
+        Ok(()) => steps.push(TestStep {
+            name: "安装管线".into(),
+            ok: true,
+            detail: "client jar / 依赖库 / natives / 资源索引 全部完成".into(),
+        }),
+        Err(e) => {
+            steps.push(TestStep { name: "安装管线".into(), ok: false, detail: e });
+            let size = dir_size(&test_dir);
+            return Ok(done_report(steps, size, &test_dir, true));
+        }
+    }
+
+    // 4. 逐项校验产物
+    let version_dir = test_dir.join("versions").join(&version_id);
+    let jar = version_dir.join(format!("{version_id}.jar"));
+    match std::fs::metadata(&jar) {
+        Ok(m) if m.len() > 0 => steps.push(TestStep {
+            name: "客户端 jar".into(),
+            ok: true,
+            detail: format!("{} KB（下载管线已做 SHA1 校验）", m.len() / 1024),
+        }),
+        Ok(_) => steps.push(TestStep { name: "客户端 jar".into(), ok: false, detail: "文件为空".into() }),
+        Err(e) => steps.push(TestStep { name: "客户端 jar".into(), ok: false, detail: e.to_string() }),
+    }
+
+    let libs_dir = test_dir.join("libraries");
+    let lib_count = count_files(&libs_dir, "jar");
+    steps.push(TestStep {
+        name: "依赖库".into(),
+        ok: lib_count > 0,
+        detail: format!("{lib_count} 个 jar"),
+    });
+
+    let natives_dir = version_dir.join("natives");
+    let dll_count = count_files(&natives_dir, "dll");
+    steps.push(TestStep {
+        name: "natives 解压".into(),
+        ok: natives_dir.exists(),
+        detail: format!("{dll_count} 个 dll"),
+    });
+
+    let index_path = test_dir
+        .join("assets")
+        .join("indexes")
+        .join(format!("{}.json", vjson.get("assetIndex").and_then(|a| a.get("id")).and_then(|i| i.as_str()).unwrap_or("pre")));
+    match std::fs::read_to_string(&index_path) {
+        Ok(text) => match serde_json::from_str::<AssetIndex>(&text) {
+            Ok(idx) => steps.push(TestStep {
+                name: "资源索引".into(),
+                ok: true,
+                detail: format!("{} 个资源对象（已抽样验证 CDN）", idx.objects.len()),
+            }),
+            Err(e) => steps.push(TestStep { name: "资源索引".into(), ok: false, detail: e.to_string() }),
+        },
+        Err(e) => steps.push(TestStep { name: "资源索引".into(), ok: false, detail: e.to_string() }),
+    }
+
+    let size = dir_size(&test_dir);
+    Ok(done_report(steps, size, &test_dir, false))
 }
 
 // ---------------------------------------------------------------- Fabric / Quilt
@@ -485,32 +781,87 @@ struct FabricIntermediary {
     version: String,
 }
 
-/// 列出 Fabric loader 版本（新→旧，稳定版优先）
+/// 云控 Worker 基础地址（用于 Quilt meta 代理；域名未开通时自动跳过）
+fn cloud_base_url() -> Option<String> {
+    crate::updater::CLOUD_CONFIG_URL
+        .strip_suffix("/config")
+        .map(|s| s.to_string())
+}
+
+/// 按源链拉取 JSON 数组，第一个返回非空数组的源胜出。
+/// 所有源都能连通但都为空（如 Fabric 已不服务 1.7.10、MC 26.4 尚未发布 loader）时
+/// 返回 Ok(vec![])——这是"上游没有"而非网络故障；只有全部源网络/解析失败才返回 Err
+async fn fetch_loader_entries(urls: &[String]) -> Result<Vec<FabricLoaderEntry>, String> {
+    let client = downloader::http_client();
+    let mut last_err = String::new();
+    let mut any_ok = false;
+    for url in urls {
+        match client
+            .get(url)
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<Vec<FabricLoaderEntry>>().await {
+                Ok(list) if !list.is_empty() => return Ok(list),
+                Ok(_) => {
+                    any_ok = true;
+                    last_err = format!("{url} 返回空列表");
+                }
+                Err(e) => last_err = format!("{url} 解析失败: {e}"),
+            },
+            Err(e) => last_err = format!("{url} 请求失败: {e}"),
+        }
+    }
+    if any_ok {
+        return Ok(vec![]);
+    }
+    Err(last_err)
+}
+
+/// 列出 Fabric / Quilt loader 版本（新→旧）
+/// Fabric：BMCLAPI 镜像 → 官方 meta；Quilt：云控 Worker 代理 → 官方 meta
+/// （meta.quiltmc.net 国内 DNS 被污染，必须经 Worker 或科学幻想）
 #[tauri::command]
 pub async fn loader_versions(
     app: AppHandle,
     kind: String,
     mc_version: String,
 ) -> Result<Vec<String>, String> {
-    let client = downloader::http_client();
-    let (meta_base, is_quilt) = match kind.as_str() {
-        "fabric" => (format!("{}/fabric-meta", downloader::BMCLAPI), false),
-        "quilt" => (format!("{}/quilt-meta/v3", downloader::BMCLAPI), true),
+    let mut urls: Vec<String> = vec![];
+    match kind.as_str() {
+        "fabric" => {
+            urls.push(format!(
+                "{}/fabric-meta/v2/versions/loader/{mc_version}",
+                downloader::BMCLAPI
+            ));
+            urls.push(format!(
+                "https://meta.fabricmc.net/v2/versions/loader/{mc_version}"
+            ));
+        }
+        "quilt" => {
+            if let Some(base) = cloud_base_url() {
+                urls.push(format!("{base}/quilt-meta/v3/versions/loader/{mc_version}"));
+            }
+            urls.push(format!(
+                "https://meta.quiltmc.net/v3/versions/loader/{mc_version}"
+            ));
+        }
         _ => return Ok(vec![]),
+    }
+    let entries = match fetch_loader_entries(&urls).await {
+        Ok(e) => e,
+        Err(e) => {
+            let _ = &app;
+            if kind == "quilt" {
+                return Err(format!(
+                    "{e}（Quilt 元数据国内不可达：需部署云控 Worker 的 /quilt-meta 代理路由，或使用代理网络）"
+                ));
+            }
+            return Err(e);
+        }
     };
-    let path = if is_quilt {
-        format!("{meta_base}/versions/loader/{mc_version}")
-    } else {
-        format!("{meta_base}/v2/versions/loader/{mc_version}")
-    };
-    let entries: Vec<FabricLoaderEntry> = client
-        .get(&path)
-        .send()
-        .await
-        .map_err(|e| format!("获取 loader 列表失败: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("解析 loader 列表失败: {e}"))?;
+    let _ = &app;
 
     let mut versions: Vec<String> = entries.into_iter().map(|e| e.loader.version).collect();
     // 保持服务端顺序（通常新→旧）
@@ -551,22 +902,76 @@ pub async fn mc_install_loader(
     let parent = fetch_version_json(&client, &version_url, prefer).await?;
 
     // 2. loader profile json
-    let meta_base = if is_quilt {
-        format!("{}/quilt-meta/v3", downloader::BMCLAPI)
+    // Fabric：BMCLAPI 镜像 → 官方 meta（均为 /v2/ 路径）
+    // Quilt：云控 Worker 代理 → 官方 meta → maven.quiltmc.org 现场拼装
+    let profile: Value = if is_quilt {
+        let mut urls: Vec<String> = vec![];
+        if let Some(base) = cloud_base_url() {
+            urls.push(format!(
+                "{base}/quilt-meta/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
+            ));
+        }
+        urls.push(format!(
+            "https://meta.quiltmc.net/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
+        ));
+        let mut fetched: Option<Value> = None;
+        let mut last_err = String::new();
+        for url in &urls {
+            match client
+                .get(url)
+                .timeout(std::time::Duration::from_secs(25))
+                .send()
+                .await
+            {
+                Ok(resp) => match resp.json::<Value>().await {
+                    Ok(v) if v.is_object() => {
+                        fetched = Some(v);
+                        break;
+                    }
+                    Ok(_) => last_err = format!("{url} 返回异常响应"),
+                    Err(e) => last_err = format!("{url} 解析失败: {e}"),
+                },
+                Err(e) => last_err = format!("{url} 请求失败: {e}"),
+            }
+        }
+        match fetched {
+            Some(v) => v,
+            None => quilt_profile_from_maven(&client, &loader_version, &mc_version)
+                .await
+                .ok_or_else(|| format!("获取 Quilt profile 失败: {last_err}"))?,
+        }
     } else {
-        format!("{}/fabric-meta", downloader::BMCLAPI)
+        let urls = [
+            format!(
+                "{}/fabric-meta/v2/versions/loader/{mc_version}/{loader_version}/profile/json",
+                downloader::BMCLAPI
+            ),
+            format!(
+                "https://meta.fabricmc.net/v2/versions/loader/{mc_version}/{loader_version}/profile/json"
+            ),
+        ];
+        let mut fetched: Option<Value> = None;
+        let mut last_err = String::new();
+        for url in &urls {
+            match client
+                .get(url)
+                .timeout(std::time::Duration::from_secs(25))
+                .send()
+                .await
+            {
+                Ok(resp) => match resp.json::<Value>().await {
+                    Ok(v) if v.is_object() => {
+                        fetched = Some(v);
+                        break;
+                    }
+                    Ok(_) => last_err = format!("{url} 返回异常响应"),
+                    Err(e) => last_err = format!("{url} 解析失败: {e}"),
+                },
+                Err(e) => last_err = format!("{url} 请求失败: {e}"),
+            }
+        }
+        fetched.ok_or_else(|| format!("获取 Fabric profile 失败: {last_err}"))?
     };
-    let profile_url = format!(
-        "{meta_base}/versions/loader/{mc_version}/{loader_version}/profile/json"
-    );
-    let profile: Value = client
-        .get(&profile_url)
-        .send()
-        .await
-        .map_err(|e| format!("获取 loader profile 失败: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("解析 loader profile 失败: {e}"))?;
 
     let merged_id = profile
         .get("id")
@@ -600,8 +1005,107 @@ pub async fn mc_install_loader(
         map.insert("id".to_string(), Value::String(merged_id.clone()));
     }
 
-    install_version(&app, Path::new(&game_dir), &merged_id, &merged).await?;
+    install_version(&app, Path::new(&game_dir), &merged_id, &merged, true).await?;
     Ok(merged_id)
+}
+
+/// 从 maven.quiltmc.org 拉取 loader JSON 拼装为 profile
+/// （该 JSON 的 libraries 是 {client:[], common:[]} 对象需展平，且无 id/inheritsFrom 需补齐）
+/// 为 maven 坐标合成 downloads.artifact（path + 主 url + 回退 url 列表）
+/// Quilt 生态分散在多个仓库：org.quiltmc:* → maven.quiltmc.org；
+/// net.fabricmc:*（Quilt 复用 Fabric 的 intermediary）→ maven.fabricmc.net；其余走中央仓库。
+fn maven_artifact(name: &str) -> Value {
+    let path = name_to_path(name).display().to_string().replace('\\', "/");
+    let mut urls: Vec<String> = vec![];
+    if name.starts_with("org.quiltmc:") {
+        urls.push(format!(
+            "https://maven.quiltmc.org/repository/release/{path}"
+        ));
+    }
+    if name.starts_with("net.fabricmc:") {
+        urls.push(format!("https://maven.fabricmc.net/{path}"));
+    }
+    urls.push(format!("https://repo1.maven.org/maven2/{path}"));
+    urls.push(format!("{}/maven/{path}", downloader::BMCLAPI));
+    urls.dedup();
+    let primary = urls[0].clone();
+    json!({
+        "path": path,
+        "url": primary,
+        "fallbacks": &urls[1..],
+    })
+}
+
+/// 从 maven.quiltmc.org 的 loader JSON 现场拼装 Quilt profile
+/// （云控 Worker 代理 / meta.quiltmc.net 均不可达时的兜底链路）
+///
+/// 注意：maven 上的 loader JSON 是**残缺版**——libraries 不带 downloads 信息、
+/// 没有 loader 本体，也没有 intermediary。且 Quilt 并不发布独立的 quilt-intermediary，
+/// 映射层复用 Fabric 的 `net.fabricmc:intermediary:<MC版本>`，必须手动补上，
+/// 否则装出来的版本缺映射 jar，启动即崩。
+async fn quilt_profile_from_maven(
+    client: &reqwest::Client,
+    loader_version: &str,
+    mc_version: &str,
+) -> Option<Value> {
+    let url = format!(
+        "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-loader/{loader_version}/quilt-loader-{loader_version}.json"
+    );
+    let raw: Value = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(25))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let mut libs: Vec<Value> = vec![];
+    if let Some(obj) = raw.get("libraries").and_then(|l| l.as_object()) {
+        for key in ["client", "common"] {
+            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+                for l in arr {
+                    if let Some(name) = l.get("name").and_then(|n| n.as_str()) {
+                        libs.push(json!({
+                            "name": name,
+                            "downloads": { "artifact": maven_artifact(name) },
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    // loader 本体（mainClass 所在 jar）
+    let loader_name = format!("org.quiltmc:quilt-loader:{loader_version}");
+    libs.push(json!({
+        "name": loader_name,
+        "downloads": { "artifact": maven_artifact(&loader_name) },
+    }));
+    // Fabric intermediary（映射版 MC，Quilt 启动必需）
+    let intermediary_name = format!("net.fabricmc:intermediary:{mc_version}");
+    libs.push(json!({
+        "name": intermediary_name,
+        "downloads": { "artifact": maven_artifact(&intermediary_name) },
+    }));
+    let mut profile = serde_json::Map::new();
+    profile.insert(
+        "id".into(),
+        Value::String(format!("quilt-loader-{loader_version}-{mc_version}")),
+    );
+    // mainClass 在 loader JSON 里是 {client, server, serverLauncher} 映射，取 client
+    if let Some(mc) = raw.get("mainClass") {
+        let main_class = match mc.as_str() {
+            Some(s) => Some(Value::String(s.to_string())),
+            None => mc.get("client").cloned(),
+        };
+        if let Some(main_class) = main_class.filter(|v| v.is_string()) {
+            profile.insert("mainClass".into(), main_class);
+        }
+    }
+    // 不覆盖 javaVersion：父版本 JSON 里的才是该 MC 版本的真实 Java 要求
+    // （loader JSON 的 min_java_version 只是 loader 自身下限，如 0.30.1 是 8）
+    profile.insert("libraries".into(), Value::Array(libs));
+    Some(Value::Object(profile))
 }
 
 // ---------------------------------------------------------------- Forge / NeoForge
@@ -621,8 +1125,11 @@ async fn maven_versions_at(url: &str) -> Result<Vec<String>, String> {
     let mut versions = vec![];
     for line in text.lines() {
         let line = line.trim();
-        if line.starts_with("<version>") && line.ends_with("</version>") {
-            versions.push(line[8..line.len() - 9].to_string());
+        if let Some(inner) = line
+            .strip_prefix("<version>")
+            .and_then(|s| s.strip_suffix("</version>"))
+        {
+            versions.push(inner.to_string());
         }
     }
     Ok(versions)
@@ -645,21 +1152,6 @@ async fn neoforge_versions_api() -> Vec<String> {
     }
 }
 
-/// 按 MC 版本推导 NeoForge 版本号前缀（新号规则：丢弃前导 1.）
-/// MC 1.21.1 → 21.1.x；MC 26.4 → 26.4.x；旧版 1.20.1 → 1.20.1-（net.neoforged:forge 兼容线）
-fn neoforge_prefix(mc_version: &str) -> (String, bool) {
-    let (major, minor, patch) = java::parse_mc_version(mc_version);
-    let is_new = major >= 2 || (major == 1 && (minor >= 21 || (minor == 20 && patch >= 5)));
-    let prefix = if !is_new {
-        format!("{major}.{minor}")
-    } else if major == 1 {
-        format!("{minor}.{patch}")
-    } else {
-        format!("{major}.{minor}")
-    };
-    (prefix, is_new)
-}
-
 /// 版本串排序键：取全部数字段
 fn version_key(v: &str) -> Vec<u32> {
     v.split(|c: char| !c.is_ascii_digit())
@@ -669,71 +1161,79 @@ fn version_key(v: &str) -> Vec<u32> {
 }
 
 /// 列出 Forge / NeoForge 版本（新→旧，稳定版优先）
-/// 全部走 BMCLAPI /maven/ 镜像优先，官方源回退——国内直连官方 maven 基本不通
+/// 逐个源拉取并立即按 MC 版本过滤，过滤后非空才采用——
+/// 避免陈旧镜像（BMCLAPI 的 forge 元数据停在 2022）或错误产物线
+/// （net.neoforged:forge 兼容线里没有 21.x 版本）静默产生空结果
 #[tauri::command]
 pub async fn forge_versions(
     app: AppHandle,
     kind: String,
     mc_version: String,
 ) -> Result<Vec<String>, String> {
-    let mut versions: Vec<String> = vec![];
     let mut last_err = String::new();
     let bmcl = downloader::BMCLAPI;
 
-    if kind == "neoforge" {
-        let (prefix, is_new) = neoforge_prefix(&mc_version);
-        // 源1：BMCLAPI 镜像 neoforge 元数据；源2：BMCLAPI 镜像 forge 元数据（1.20.1 兼容线）
-        // 源3：官方 /releases；源4：官方 Maven API
-        let sources = [
+    // 候选版本号前缀：旧式 "{mc}-"（Forge / NeoForge 兼容线）+ 新式（NeoForge 20.2 起丢弃前导 1.）
+    let mut prefixes: Vec<String> = vec![format!("{mc_version}-")];
+    let (major, minor, patch) = java::parse_mc_version(&mc_version);
+    if major == 1 {
+        prefixes.push(format!("{minor}.{patch}."));
+    } else if major >= 2 {
+        prefixes.push(format!("{major}.{minor}."));
+    }
+    let matches = |v: &String| prefixes.iter().any(|p| v.starts_with(p));
+
+    let sources: Vec<String> = if kind == "neoforge" {
+        vec![
+            // BMCLAPI 镜像优先（国内直连官方 maven 不通）
             format!("{bmcl}/maven/net/neoforged/neoforge/maven-metadata.xml"),
-            format!("{bmcl}/maven/net/neoforged/forge/maven-metadata.xml"),
             "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml".to_string(),
+            // 1.20.1 及更早的兼容线（net.neoforged:forge，版本号 1.20.1-47.1.x）
+            format!("{bmcl}/maven/net/neoforged/forge/maven-metadata.xml"),
             "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml".to_string(),
-        ];
-        for url in &sources {
-            match maven_versions_at(url).await {
-                Ok(v) if !v.is_empty() => {
-                    versions = v;
-                    break;
-                }
-                Ok(_) => last_err = format!("{url} 返回空列表"),
-                Err(e) => last_err = e,
-            }
-        }
-        if versions.is_empty() {
-            let api = neoforge_versions_api().await;
-            if !api.is_empty() {
-                versions = api;
-            }
-        }
-        if versions.is_empty() {
-            return Err(format!("获取 NeoForge 版本失败: {last_err}"));
-        }
-        if is_new {
-            versions.retain(|v| v.starts_with(&format!("{prefix}.")) || v == &prefix);
-        } else {
-            versions.retain(|v| v.starts_with(&format!("{mc_version}-")));
-        }
+        ]
     } else {
-        // Forge：版本号形如 1.20.1-47.1.79 / 1.21.1-52.0.40
-        let sources = [
-            format!("{bmcl}/maven/net/minecraftforge/forge/maven-metadata.xml"),
+        // Forge：官方源数据最新且国内可达，放首位；BMCLAPI 镜像兜底
+        vec![
             "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml".to_string(),
-        ];
-        for url in &sources {
-            match maven_versions_at(url).await {
-                Ok(v) if !v.is_empty() => {
-                    versions = v;
+            format!("{bmcl}/maven/net/minecraftforge/forge/maven-metadata.xml"),
+        ]
+    };
+
+    let mut versions: Vec<String> = vec![];
+    let mut any_ok = false; // 是否有源成功拉取（哪怕过滤后为空）
+    for url in &sources {
+        match maven_versions_at(url).await {
+            Ok(list) => {
+                any_ok = true;
+                let mut filtered: Vec<String> = list.into_iter().filter(|v| matches(v)).collect();
+                if !filtered.is_empty() {
+                    versions.append(&mut filtered);
                     break;
                 }
-                Ok(_) => last_err = format!("{url} 返回空列表"),
-                Err(e) => last_err = e,
+                last_err = format!("{url} 中没有 MC {mc_version} 的版本");
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    // 官方 Maven API 兜底（仅 NeoForge，JSON 接口）
+    if versions.is_empty() && kind == "neoforge" {
+        let api = neoforge_versions_api().await;
+        if !api.is_empty() {
+            any_ok = true;
+            let mut filtered: Vec<String> = api.into_iter().filter(|v| matches(v)).collect();
+            if !filtered.is_empty() {
+                versions = filtered;
             }
         }
-        if versions.is_empty() {
-            return Err(format!("获取 Forge 版本失败: {last_err}"));
+    }
+    if versions.is_empty() {
+        // 源都可达但都没有该 MC 的版本（如 MC 26.4 尚未发布 loader）→ 空列表而非报错
+        if any_ok {
+            return Ok(vec![]);
         }
-        versions.retain(|v| v.starts_with(&format!("{mc_version}-")));
+        let name = if kind == "neoforge" { "NeoForge" } else { "Forge" };
+        return Err(format!("获取 {name} 版本失败: {last_err}"));
     }
 
     // 数字段倒序（新的在前）
@@ -951,7 +1451,7 @@ pub async fn mc_install_forge(
         .join(format!("{new_id}.json"));
     if let Ok(text) = std::fs::read_to_string(&vjson_path) {
         if let Ok(vjson) = serde_json::from_str::<Value>(&text) {
-            install_version(&app, game_path, &new_id, &vjson).await?;
+            install_version(&app, game_path, &new_id, &vjson, true).await?;
         }
     }
 

@@ -136,13 +136,13 @@ export default function ModsPage() {
         </select>
         <div className="flex gap-1 bg-ccl-panel border border-ccl-border rounded-lg p-0.5">
           <button
-            className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "modrinth" ? "bg-[#2f6b3a] text-white" : "text-ccl-muted"}`}
+            className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "modrinth" ? "bg-ccl-accent text-white" : "text-ccl-muted"}`}
             onClick={() => setTab("modrinth")}
           >
             Modrinth
           </button>
           <button
-            className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "curseforge" ? "bg-[#2f6b3a] text-white" : "text-ccl-muted"}`}
+            className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "curseforge" ? "bg-ccl-accent text-white" : "text-ccl-muted"}`}
             onClick={() => setTab("curseforge")}
           >
             CurseForge
@@ -181,7 +181,7 @@ export default function ModsPage() {
                     {hit.icon_url ? (
                       <img src={hit.icon_url} className="w-9 h-9 rounded-lg object-cover bg-ccl-bg" alt="" />
                     ) : (
-                      <div className="w-9 h-9 rounded-lg bg-[#223052] flex items-center justify-center text-[11px] font-bold text-[#9fb4ff]">
+                      <div className="w-9 h-9 rounded-lg bg-ccl-accent/10 border border-ccl-accent/25 flex items-center justify-center text-[11px] font-bold text-ccl-accent">
                         {hitName(hit).slice(0, 2).toUpperCase()}
                       </div>
                     )}

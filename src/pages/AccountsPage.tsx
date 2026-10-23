@@ -169,7 +169,7 @@ export default function AccountsPage() {
                   key={a.uuid}
                   className="bg-ccl-bg border border-ccl-border rounded-lg px-3.5 py-2.5 flex items-center gap-3"
                 >
-                  <div className="w-9 h-9 rounded-lg bg-[#223052] flex items-center justify-center text-[12px] font-bold text-[#9fb4ff] shrink-0">
+                  <div className="w-9 h-9 rounded-lg bg-ccl-accent/10 border border-ccl-accent/25 flex items-center justify-center text-[12px] font-bold text-ccl-accent shrink-0">
                     {a.name.slice(0, 2).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">

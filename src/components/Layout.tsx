@@ -42,10 +42,10 @@ function TitleBar() {
   return (
     <div
       data-tauri-drag-region
-      className="flex items-center h-11 shrink-0 bg-ccl-panel border-b border-ccl-border select-none"
+      className="flex items-center h-10 shrink-0 bg-ccl-panel border-b border-ccl-border select-none"
     >
       <div className="flex items-center gap-2 px-4" data-tauri-drag-region>
-        <div className="w-5 h-5 rounded bg-gradient-to-br from-[#5db95f] to-[#3c8c3f] flex items-center justify-center text-[8px] font-extrabold text-[#0f1420]">
+        <div className="w-5 h-5 rounded bg-ccl-accent flex items-center justify-center text-[8px] font-extrabold text-white">
           CCL
         </div>
         <span className="text-xs text-ccl-muted font-semibold" data-tauri-drag-region>
@@ -55,19 +55,19 @@ function TitleBar() {
       <div className="flex-1" data-tauri-drag-region />
       <div className="flex items-center h-full">
         <button
-          className="h-full px-3.5 hover:bg-white/5 text-ccl-muted"
+          className="h-full px-3.5 hover:bg-black/5 text-ccl-muted"
           onClick={() => appWindow.minimize()}
         >
           <Minus size={14} />
         </button>
         <button
-          className="h-full px-3.5 hover:bg-white/5 text-ccl-muted"
+          className="h-full px-3.5 hover:bg-black/5 text-ccl-muted"
           onClick={() => appWindow.toggleMaximize().then(() => setMaximized(!maximized))}
         >
           {maximized ? <Copy size={12} /> : <Square size={11} />}
         </button>
         <button
-          className="h-full px-3.5 hover:bg-red-600/80 text-ccl-muted hover:text-white"
+          className="h-full px-3.5 hover:bg-red-500 hover:text-white text-ccl-muted"
           onClick={() => appWindow.close()}
         >
           <X size={14} />
@@ -87,17 +87,17 @@ function Sidebar() {
   }, []);
 
   return (
-    <nav className="w-44 shrink-0 bg-ccl-panel border-r border-ccl-border flex flex-col py-3">
+    <nav className="w-[148px] shrink-0 bg-ccl-panel border-r border-ccl-border flex flex-col py-3">
       {NAV.map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}
           end={to === "/"}
           className={({ isActive }) =>
-            `flex items-center gap-2.5 mx-2 px-3 py-2 rounded-lg text-[13px] font-medium transition-colors ${
+            `flex items-center gap-2.5 mx-2 px-3 py-2 rounded-md text-[13px] font-medium transition-colors ${
               isActive
-                ? "bg-[#2f6b3a] text-white"
-                : "text-ccl-muted hover:bg-white/5 hover:text-ccl-text"
+                ? "bg-[#e4f3e4] text-ccl-accent font-semibold"
+                : "text-[#5a6270] hover:bg-black/4 hover:text-ccl-text"
             }`
           }
         >
@@ -112,7 +112,7 @@ function Sidebar() {
         </NavLink>
       ))}
       <div className="flex-1" />
-      <div className="mx-3 mb-1 text-[10px] text-ccl-muted/60 leading-relaxed">
+      <div className="mx-3 mb-1 text-[10px] text-ccl-muted/70 leading-relaxed">
         {version ? `v${version}` : ""}
       </div>
     </nav>
@@ -140,7 +140,7 @@ function DownloadDock() {
                   {d.total > 0 ? `${fmtSize(d.loaded)} / ${fmtSize(d.total)}` : fmtSpeed(d.speed)}
                 </span>
               </div>
-              <div className="h-1 bg-[#232c42] rounded overflow-hidden">
+              <div className="h-1 bg-[#e6eaef] rounded overflow-hidden">
                 <div
                   className="h-full bg-ccl-accent transition-all"
                   style={{ width: `${pct}%` }}
@@ -172,8 +172,8 @@ function UpdateBanner({ update }: { update: UpdateInfo }) {
   };
 
   return (
-    <div className="flex items-center gap-3 bg-[#2f6b3a]/25 border-b border-[#3f8a4d]/40 px-4 py-2 text-[12px]">
-      <ArrowUpCircle size={15} className="text-ccl-accent2 shrink-0" />
+    <div className="flex items-center gap-3 bg-[#e4f3e4] border-b border-[#bfe0bf] px-4 py-2 text-[12px] text-[#2f5e2f]">
+      <ArrowUpCircle size={15} className="text-ccl-accent shrink-0" />
       <span>
         发现新版本 <b>v{update.latest_version}</b>（当前 v{update.current_version}）
         {update.release_notes && (
@@ -219,9 +219,9 @@ function ForceUpdateModal({ update }: { update: UpdateInfo }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div className="card w-[420px] text-center">
-        <ArrowUpCircle size={40} className="mx-auto text-ccl-accent2 mb-3" />
+        <ArrowUpCircle size={40} className="mx-auto text-ccl-accent mb-3" />
         <h2 className="text-lg font-bold mb-2">必须更新才能继续使用</h2>
         <p className="text-[13px] text-ccl-muted mb-4">
           当前版本 v{update.current_version} 已低于最低支持版本 v{update.latest_version}
@@ -229,12 +229,12 @@ function ForceUpdateModal({ update }: { update: UpdateInfo }) {
           请更新到最新版本后重新打开启动器
         </p>
         {update.release_notes && (
-          <pre className="text-left text-[12px] bg-ccl-bg border border-ccl-border rounded-lg p-3 mb-4 whitespace-pre-wrap max-h-32 overflow-auto">
+          <pre className="text-left text-[12px] bg-ccl-panel2 border border-ccl-border rounded-md p-3 mb-4 whitespace-pre-wrap max-h-32 overflow-auto">
             {update.release_notes}
           </pre>
         )}
         {installing && (
-          <div className="h-1.5 bg-[#232c42] rounded overflow-hidden mb-3">
+          <div className="h-1.5 bg-[#e6eaef] rounded overflow-hidden mb-3">
             <div className="h-full bg-ccl-accent" style={{ width: `${progress}%` }} />
           </div>
         )}
@@ -253,8 +253,8 @@ function AnnouncementCard({ update }: { update: UpdateInfo }) {
   });
   if (!update.announcement || dismissed) return null;
   return (
-    <div className="flex items-start gap-2.5 bg-[#223052]/40 border border-[#2f4470] rounded-xl px-4 py-3 text-[12px] mb-4">
-      <Bell size={14} className="text-[#9fb4ff] mt-0.5 shrink-0" />
+    <div className="flex items-start gap-2.5 bg-[#e8f0fb] border border-[#c3d7f0] rounded-md px-4 py-3 text-[12px] mb-4 text-[#2f4a6e]">
+      <Bell size={14} className="text-[#5a7fb5] mt-0.5 shrink-0" />
       <div className="flex-1 whitespace-pre-wrap">{update.announcement}</div>
       <button
         className="text-ccl-muted hover:text-ccl-text shrink-0"
@@ -274,10 +274,10 @@ function Toast() {
   if (!toast) return null;
   return (
     <div
-      className={`fixed bottom-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-[13px] z-[60] shadow-lg border ${
+      className={`fixed bottom-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-md text-[13px] z-[60] shadow-lg border text-white ${
         toast.kind === "ok"
-          ? "bg-[#2f6b3a] border-[#3f8a4d] text-white"
-          : "bg-[#6e3535] border-[#8c3c3c] text-white"
+          ? "bg-ccl-accent border-ccl-accent2"
+          : "bg-ccl-danger border-ccl-danger"
       }`}
     >
       {toast.text}
@@ -347,7 +347,7 @@ export default function Layout() {
       <div className="flex-1 flex min-h-0">
         <Sidebar />
         <main className="flex-1 flex flex-col min-w-0">
-          <div className="flex-1 overflow-auto p-6" key={location.pathname}>
+          <div className="flex-1 overflow-auto p-5" key={location.pathname}>
             {location.pathname === "/" && update?.cloud_online && (
               <AnnouncementCard update={update} />
             )}
