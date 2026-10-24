@@ -68,6 +68,7 @@ fn main() {
             auth::remove_account,
             auth::ms_login_start,
             auth::ms_login_poll,
+            auth::ms_login_exchange,
             auth::offline_login,
             auth::refresh_account,
             // 模组市场
