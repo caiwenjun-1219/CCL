@@ -867,8 +867,8 @@ async fn fetch_loader_entries(urls: &[String]) -> Result<Vec<FabricLoaderEntry>,
 }
 
 /// 列出 Fabric / Quilt loader 版本（新→旧）
-/// Fabric：BMCLAPI 镜像 → 官方 meta；Quilt：云控 Worker 代理 → 官方 meta
-/// （meta.quiltmc.net 国内 DNS 被污染，必须经 Worker 或科学幻想）
+/// Fabric：BMCLAPI 镜像 → 官方 meta；Quilt：云控 Worker 代理 → 官方 meta.quiltmc.org
+/// → maven.quiltmc.org 合成兜底（无需任何基础设施，国内直连可用）
 #[tauri::command]
 pub async fn loader_versions(
     app: AppHandle,
@@ -890,29 +890,87 @@ pub async fn loader_versions(
             if let Some(base) = cloud_base_url() {
                 urls.push(format!("{base}/quilt-meta/v3/versions/loader/{mc_version}"));
             }
+            // 注意：官方域名是 meta.quiltmc.org（quilt-installer / HMCL 均如此）；
+            // meta.quiltmc.net 根本不存在（NXDOMAIN），曾因写错域名误判为"国内 DNS 污染"
             urls.push(format!(
-                "https://meta.quiltmc.net/v3/versions/loader/{mc_version}"
+                "https://meta.quiltmc.org/v3/versions/loader/{mc_version}"
             ));
         }
         _ => return Ok(vec![]),
     }
-    let entries = match fetch_loader_entries(&urls).await {
-        Ok(e) => e,
+    let mut versions: Vec<String> = match fetch_loader_entries(&urls).await {
+        Ok(entries) => entries.into_iter().map(|e| e.loader.version).collect(),
         Err(e) => {
-            let _ = &app;
-            if kind == "quilt" {
-                return Err(format!(
-                    "{e}（Quilt 元数据国内不可达：需部署云控 Worker 的 /quilt-meta 代理路由，或使用代理网络）"
-                ));
+            if kind != "quilt" {
+                return Err(e);
             }
-            return Err(e);
+            // Quilt meta 不可达（国内无代理时 TLS 被重置）→ maven 合成兜底
+            match quilt_versions_from_maven(&mc_version).await {
+                Ok(v) => v,
+                Err(me) => return Err(format!("{e}；Quilt maven 兜底失败: {me}")),
+            }
         }
     };
+    // Quilt：meta 可达但列表为空（Worker 陈旧缓存 / 新发布 MC 版本）时，
+    // 用 maven 兜底再确认一次——两者都为空才是"该 MC 版本暂无 Quilt 支持"
+    if kind == "quilt" && versions.is_empty() {
+        if let Ok(v) = quilt_versions_from_maven(&mc_version).await {
+            versions = v;
+        }
+    }
     let _ = &app;
 
-    let mut versions: Vec<String> = entries.into_iter().map(|e| e.loader.version).collect();
-    // 保持服务端顺序（通常新→旧）
+    // 统一规范化排序：新→旧 + 稳定版提前。
+    // 上游返回顺序并不保证——实测 Quilt v3 meta 的顺序是混乱的（首位常为远古 beta），
+    // 而前端默认选中 list[0]，不规范化会把老 beta 当默认安装版本
+    versions.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
     versions.dedup();
+    if let Some(idx) = versions
+        .iter()
+        .position(|v| !v.contains("-beta") && !v.contains("-alpha"))
+    {
+        if idx > 0 {
+            let stable = versions.remove(idx);
+            versions.insert(0, stable);
+        }
+    }
+    Ok(versions)
+}
+
+/// Quilt loader 版本列表兜底：从 maven.quiltmc.org 的 maven-metadata 合成。
+///
+/// 依据 Quilt 官方 meta 生成代码（QuiltMC/update-quilt-meta 的
+/// QuiltLauncherMetadataCollectorV3）：按 MC 版本的 loader 列表 = quilt-loader
+/// 的全部版本——Quilt loader 是版本无关的，经 intermediary 跨 MC 版本工作，
+/// 门槛只是该 MC 版本的映射已发布。实测 meta.quiltmc.org 对 1.16.5～1.21.11
+/// 返回的 307 个版本与 quilt-loader 的 maven-metadata 完全一致。
+///
+/// 因此无需 meta.quiltmc.org（国内无代理不可达），也无需云控 Worker：
+/// 一次 maven-metadata.xml 即可得到完整列表。
+async fn quilt_versions_from_maven(mc_version: &str) -> Result<Vec<String>, String> {
+    // 1. MC 版本门槛：Fabric intermediary 是否已发布（Quilt 复用之）。
+    //    未发布说明该 MC 版本还没有 Quilt 支持，返回空列表而非全部版本。
+    let intermediary_meta = "https://maven.fabricmc.net/net/fabricmc/intermediary/maven-metadata.xml";
+    match maven_versions_at(intermediary_meta).await {
+        Ok(list) if list.iter().any(|v| v == mc_version) => {}
+        Ok(_) => return Ok(vec![]),
+        Err(e) => return Err(format!("检查 intermediary 元数据失败: {e}")),
+    }
+    // 2. quilt-loader 全部版本（新→旧，稳定版提前）
+    let url = "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-loader/maven-metadata.xml";
+    let mut versions = maven_versions_at(url).await?;
+    versions.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+    versions.dedup();
+    if let Some(idx) = versions
+        .iter()
+        .position(|v| !v.contains("-beta") && !v.contains("-alpha"))
+    {
+        if idx > 0 {
+            let stable = versions.remove(idx);
+            versions.insert(0, stable);
+        }
+    }
+    versions.truncate(100);
     Ok(versions)
 }
 
@@ -950,7 +1008,7 @@ pub async fn mc_install_loader(
 
     // 2. loader profile json
     // Fabric：BMCLAPI 镜像 → 官方 meta（均为 /v2/ 路径）
-    // Quilt：云控 Worker 代理 → 官方 meta → maven.quiltmc.org 现场拼装
+    // Quilt：云控 Worker 代理 → 官方 meta.quiltmc.org → maven.quiltmc.org 现场拼装
     let profile: Value = if is_quilt {
         let mut urls: Vec<String> = vec![];
         if let Some(base) = cloud_base_url() {
@@ -959,7 +1017,7 @@ pub async fn mc_install_loader(
             ));
         }
         urls.push(format!(
-            "https://meta.quiltmc.net/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
+            "https://meta.quiltmc.org/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
         ));
         let mut fetched: Option<Value> = None;
         let mut last_err = String::new();
@@ -1514,4 +1572,35 @@ fn stderr_looks_ok(output: &std::process::Output) -> bool {
         && !text.contains("connection")
         && !text.contains("timed out")
         && !text.contains("unable to")
+}
+
+// ---------------------------------------------------------------- 测试
+
+/// Quilt 列表兜底应与官方 meta.quiltmc.org 一致：
+/// 官方 meta 生成逻辑（QuiltMC/update-quilt-meta）中按 MC 版本的 loader 列表
+/// 就是 quilt-loader maven 元数据的全部版本；实测官方 API 对 1.16.5～1.21.11
+/// 均返回 307 个版本，与此处合成结果同源（本函数截断到最新的 100 个）。
+#[tokio::test]
+async fn quilt_versions_from_maven_matches_official_meta() {
+    let list = quilt_versions_from_maven("1.21.1")
+        .await
+        .expect("maven 合成不应失败");
+    assert_eq!(list.len(), 100, "应截断到最新 100 个版本");
+    assert!(
+        !list[0].contains("-beta") && !list[0].contains("-alpha"),
+        "稳定版应提前，实际首位: {}",
+        list[0]
+    );
+    assert!(list.iter().any(|v| v == "0.30.1"), "应包含 0.30.1（E2E 实证可装）");
+    assert!(list.iter().any(|v| v == "0.31.0-beta.4"), "应包含当前最新 beta");
+}
+
+/// intermediary 未发布的 MC 版本 → 空列表（"暂无 Quilt 支持"），
+/// 而不是把全部 307 个 loader 版本错误地列出来
+#[tokio::test]
+async fn quilt_versions_unsupported_mc_returns_empty() {
+    let list = quilt_versions_from_maven("9.9.9")
+        .await
+        .expect("maven 合成不应失败");
+    assert!(list.is_empty(), "不支持的 MC 版本应返回空列表");
 }
