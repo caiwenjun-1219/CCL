@@ -667,3 +667,50 @@ select.field {
     transform: translateY(4px);
   }
 }
+
+/* 行内轻量图标按钮（模组管理列表用）：默认灰，悬停才变危险色 */
+.icon-danger {
+  border: 1px solid var(--color-ccl-gray5);
+  color: var(--color-ccl-gray2);
+  background: #fff;
+}
+.icon-danger:hover {
+  border-color: var(--color-ccl-danger);
+  color: var(--color-ccl-danger);
+  background: #fff6f6;
+}
+.icon-danger:disabled {
+  opacity: 0.5;
+}
+
+/* 启停开关 */
+.pcl-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--color-ccl-gray5);
+  transition: background 0.16s ease;
+  flex-shrink: 0;
+}
+.pcl-switch[data-on="true"] {
+  background: var(--color-ccl-accent);
+}
+.pcl-switch > i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+  transition: left 0.16s ease;
+}
+.pcl-switch[data-on="true"] > i {
+  left: 18px;
+}
+.pcl-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

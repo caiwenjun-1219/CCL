@@ -38,6 +38,13 @@ pub struct ModInfo {
     pub size: u64,
     /// 项目名（从 jar 文件名推断，仅展示）
     pub project_name: String,
+    /// jar 内声明的模组名（fabric.mod.json / quilt.mod.json / mods.toml / mcmod.info）
+    #[serde(default)]
+    pub mod_name: Option<String>,
+    #[serde(default)]
+    pub mod_version: Option<String>,
+    #[serde(default)]
+    pub mod_id: Option<String>,
 }
 
 fn instance_dir(app: &AppHandle, id: &str) -> PathBuf {
@@ -247,6 +254,169 @@ fn mods_dir(inst: &Instance) -> PathBuf {
     PathBuf::from(&inst.game_dir).join("mods")
 }
 
+/// jar 内声明的元数据，读不到就全 None
+#[derive(Debug, Default, Clone)]
+struct ModMeta {
+    id: Option<String>,
+    name: Option<String>,
+    version: Option<String>,
+}
+
+impl ModMeta {
+    fn is_empty(&self) -> bool {
+        self.id.is_none() && self.name.is_none() && self.version.is_none()
+    }
+}
+
+/// key = jar 路径，value = (文件大小, 元数据)。大小变了视为内容变了，重新读。
+fn meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, ModMeta)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u64, ModMeta)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn non_empty(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && !v.contains("${"))
+}
+
+fn json_mod(s: &str, id_key: &str, name_key: &str, ver_key: &str) -> Option<ModMeta> {
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    Some(ModMeta {
+        id: non_empty(v.get(id_key)?.as_str().map(String::from)),
+        name: non_empty(v.get(name_key).and_then(|x| x.as_str()).map(String::from)),
+        version: non_empty(v.get(ver_key).and_then(|x| x.as_str()).map(String::from)),
+    })
+}
+
+/// mods.toml / neoforge.mods.toml 的极简取值：取第一个 key = "value" 行
+fn toml_field(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix(key) {
+            if let Some(r) = rest.trim_start().strip_prefix('=') {
+                let v = r.trim().trim_matches('"').trim_matches('\'').to_string();
+                if let Some(v) = non_empty(Some(v)) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn read_mod_meta(path: &std::path::Path) -> ModMeta {
+    use std::io::Read;
+
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return ModMeta::default(),
+    };
+    let mut zip = match zip::ZipArchive::new(file) {
+        Ok(z) => z,
+        Err(_) => return ModMeta::default(),
+    };
+
+    // Fabric / Quilt（Quilt 兼容层也会带 fabric.mod.json）
+    for entry_name in ["fabric.mod.json", "quilt.mod.json"] {
+        if let Ok(mut entry) = zip.by_name(entry_name) {
+            let mut s = String::new();
+            if entry.read_to_string(&mut s).is_ok() {
+                if entry_name == "fabric.mod.json" {
+                    if let Some(m) = json_mod(&s, "id", "name", "version") {
+                        if !m.is_empty() {
+                            return m;
+                        }
+                    }
+                } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                    if let Some(loader) = v.get("quilt_loader") {
+                        let m = ModMeta {
+                            id: non_empty(loader.get("id").and_then(|x| x.as_str()).map(String::from)),
+                            name: non_empty(
+                                loader
+                                    .get("metadata")
+                                    .and_then(|x| x.get("name"))
+                                    .and_then(|x| x.as_str())
+                                    .map(String::from),
+                            ),
+                            version: non_empty(
+                                loader.get("version").and_then(|x| x.as_str()).map(String::from),
+                            ),
+                        };
+                        if !m.is_empty() {
+                            return m;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Forge / NeoForge
+    for entry_name in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
+        if let Ok(mut entry) = zip.by_name(entry_name) {
+            let mut s = String::new();
+            if entry.read_to_string(&mut s).is_ok() {
+                let m = ModMeta {
+                    id: toml_field(&s, "modId"),
+                    name: toml_field(&s, "displayName"),
+                    version: toml_field(&s, "version"),
+                };
+                if !m.is_empty() {
+                    return m;
+                }
+            }
+        }
+    }
+
+    // 远古 Forge
+    if let Ok(mut entry) = zip.by_name("mcmod.info") {
+        let mut s = String::new();
+        if entry.read_to_string(&mut s).is_ok() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                let first = match &v {
+                    serde_json::Value::Array(a) => a.first().cloned(),
+                    serde_json::Value::Object(o) => o
+                        .get("modList")
+                        .and_then(|l| l.as_array())
+                        .and_then(|a| a.first())
+                        .cloned()
+                        .or_else(|| Some(v.clone())),
+                    _ => None,
+                };
+                if let Some(f) = first {
+                    let m = ModMeta {
+                        id: non_empty(f.get("modid").and_then(|x| x.as_str()).map(String::from)),
+                        name: non_empty(f.get("name").and_then(|x| x.as_str()).map(String::from)),
+                        version: non_empty(f.get("version").and_then(|x| x.as_str()).map(String::from)),
+                    };
+                    if !m.is_empty() {
+                        return m;
+                    }
+                }
+            }
+        }
+    }
+
+    ModMeta::default()
+}
+
+fn cached_mod_meta(path: &std::path::Path, size: u64) -> ModMeta {
+    let key = path.to_string_lossy().to_string();
+    if let Ok(cache) = meta_cache().lock() {
+        if let Some((cached_size, meta)) = cache.get(&key) {
+            if *cached_size == size {
+                return meta.clone();
+            }
+        }
+    }
+    let meta = read_mod_meta(path);
+    if let Ok(mut cache) = meta_cache().lock() {
+        cache.insert(key, (size, meta.clone()));
+    }
+    meta
+}
+
 #[tauri::command]
 pub fn list_mods(app: AppHandle, instance_id: String) -> Result<Vec<ModInfo>, String> {
     let inst = get_instance(&app, &instance_id)?;
@@ -258,21 +428,33 @@ pub fn list_mods(app: AppHandle, instance_id: String) -> Result<Vec<ModInfo>, St
             if !(name.ends_with(".jar") || name.ends_with(".jar.disabled")) {
                 continue;
             }
+            let path = entry.path();
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
             let enabled = name.ends_with(".jar");
             let project_name = name
                 .trim_end_matches(".jar.disabled")
                 .trim_end_matches(".jar")
                 .to_string();
+            // 禁用态文件名带 .disabled，仍按同路径缓存，避免启停后重复解析
+            let meta = cached_mod_meta(&path, size);
             out.push(ModInfo {
                 file_name: name,
                 enabled,
                 size,
                 project_name,
+                mod_name: meta.name,
+                mod_version: meta.version,
+                mod_id: meta.id,
             });
         }
     }
-    out.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    out.sort_by(|a, b| {
+        a.mod_name
+            .as_deref()
+            .unwrap_or(&a.project_name)
+            .to_lowercase()
+            .cmp(&b.mod_name.as_deref().unwrap_or(&b.project_name).to_lowercase())
+    });
     Ok(out)
 }
 

@@ -33,7 +33,12 @@ export default function SubNav({
               </div>
             )}
             {g.items.map((it) => {
-              const active = location.pathname + location.search === it.to;
+              // 带查询串的项（如 /settings?tab=ui）按「同路径 + 同参数」精确匹配；
+              // 无查询串的项只看路径，避免带上 ?instance=xxx 后丢失高亮
+              const [base, qs] = it.to.split("?");
+              const active = qs
+                ? location.pathname === base && location.search.includes(qs)
+                : location.pathname === base;
               const Icon = it.icon;
               return (
                 <NavLink

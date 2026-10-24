@@ -81,7 +81,7 @@ export default function InstancesPage() {
                     <button
                       className="btn btn-ghost !py-1 !px-2.5"
                       title="模组管理"
-                      onClick={() => navigate(`/download/mod?instance=${inst.id}`)}
+                      onClick={() => navigate(`/more/mods?instance=${inst.id}`)}
                     >
                       <Puzzle size={13} />
                     </button>

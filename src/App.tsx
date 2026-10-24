@@ -4,6 +4,7 @@ import HomePage from "./pages/HomePage";
 import InstancesPage from "./pages/InstancesPage";
 import VersionsPage from "./pages/VersionsPage";
 import ModsPage from "./pages/ModsPage";
+import ModManagePage from "./pages/ModManagePage";
 import ModpacksPage from "./pages/ModpacksPage";
 import JavaPage from "./pages/JavaPage";
 import AccountsPage from "./pages/AccountsPage";
@@ -38,12 +39,14 @@ export default function App() {
         {/* 更多 */}
         <Route path="/more" element={<Navigate to="/more/version" replace />} />
         <Route path="/more/version" element={<InstancesPage />} />
+        <Route path="/more/mods" element={<ModManagePage />} />
         <Route path="/more/account" element={<AccountsPage />} />
         <Route path="/more/about" element={<AboutPage />} />
 
         {/* 旧路由兼容 */}
         <Route path="/versions" element={<Navigate to="/download/game" replace />} />
         <Route path="/mods" element={<Navigate to="/download/mod" replace />} />
+        <Route path="/mod-manage" element={<Navigate to="/more/mods" replace />} />
         <Route path="/modpacks" element={<Navigate to="/download/pack" replace />} />
         <Route path="/java" element={<Navigate to="/download/java" replace />} />
         <Route path="/instances" element={<Navigate to="/more/version" replace />} />

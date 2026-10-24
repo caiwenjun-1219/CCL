@@ -32,6 +32,10 @@ export interface ModInfo {
   enabled: boolean;
   size: number;
   project_name: string;
+  /** jar 内声明的模组名（fabric/quilt/forge/neoforge 元数据） */
+  mod_name?: string | null;
+  mod_version?: string | null;
+  mod_id?: string | null;
 }
 
 export interface JavaInfo {

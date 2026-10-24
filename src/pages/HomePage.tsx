@@ -235,7 +235,7 @@ export default function HomePage() {
                     </button>
                     <button
                       className="btn !h-[26px] !px-2"
-                      onClick={() => navigate(`/download/mod?instance=${inst.id}`)}
+                      onClick={() => navigate(`/more/mods?instance=${inst.id}`)}
                       title="管理模组"
                     >
                       <Package size={12} />

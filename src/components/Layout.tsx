@@ -69,6 +69,7 @@ const MORE_NAV: SubNavGroup[] = [
   {
     items: [
       { to: "/more/version", label: "版本管理", icon: Boxes },
+      { to: "/more/mods", label: "模组管理", icon: Puzzle },
       { to: "/more/account", label: "游戏账户", icon: User },
       { to: "/more/about", label: "关于", icon: Info },
     ],
