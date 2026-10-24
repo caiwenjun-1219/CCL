@@ -5,7 +5,7 @@
  * 路由:
  *   GET  /config                 启动器获取云控配置(更新信息/公告)
  *   GET  /download/<key>         从 R2 下载安装包(带下载计数)
- *   GET  /quilt-meta/<path>      代理 meta.quiltmc.net(国内 DNS 污染, 供 Quilt 版本列表/安装)
+ *   GET  /quilt-meta/<path>      代理 meta.quiltmc.org(国内 TLS 重置, 供 Quilt 版本列表/安装)
  *   GET  /dashboard              管理面板(未登录显示登录页)
  *   POST /dashboard/login        面板登录
  *   POST /dashboard/logout       面板退出
@@ -599,13 +599,14 @@ loadConfig();
 // ---------------------------------------------------------------- 路由入口
 
 /**
- * Quilt meta 代理：/quilt-meta/<路径> → https://meta.quiltmc.net/<路径>
- * 官方 meta 国内 DNS 污染 + TLS 重置，Cloudflare Workers 出口可达；
- * 响应加 5 分钟缓存，启动器每次切加载器只消耗一次上游
+ * Quilt meta 代理：/quilt-meta/<路径> → https://meta.quiltmc.org/<路径>
+ * 官方 meta（meta.quiltmc.org，注意不是 .net——该域名根本不存在）国内 TLS 被重置，
+ * Cloudflare Workers 出口可达；响应加 5 分钟缓存，启动器每次切加载器只消耗一次上游
+ * 注：启动器已有 maven.quiltmc.org 合成兜底，此代理仅为带哈希校验的官方数据快车道
  */
 async function handleQuiltMeta(pathWithQuery: string, ctx: ExecutionContext): Promise<Response> {
   const upstream = new URL(
-    "https://meta.quiltmc.net/" + pathWithQuery.slice("/quilt-meta/".length)
+    "https://meta.quiltmc.org/" + pathWithQuery.slice("/quilt-meta/".length)
   );
   const resp = await fetch(upstream.toString(), {
     headers: { "User-Agent": "CwjCraftLauncher/1.0 (+https://caiwenjun.top)" },
@@ -636,7 +637,7 @@ export default {
       // 安装包下载(启动器读取, 无需鉴权)
       if (path.startsWith("/download/")) return await handleDownload(env, path, ctx);
 
-      // Quilt meta 代理(meta.quiltmc.net 国内 DNS 被污染, 由 Cloudflare 出口转发, 无需鉴权)
+      // Quilt meta 代理(meta.quiltmc.org 国内 TLS 被重置, 由 Cloudflare 出口转发, 无需鉴权)
       if (path.startsWith("/quilt-meta/")) return await handleQuiltMeta(path + url.search, ctx);
 
       // 面板
