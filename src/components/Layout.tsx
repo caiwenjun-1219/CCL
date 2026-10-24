@@ -16,6 +16,8 @@ import {
   X,
   ChevronUp,
   Check,
+  Image,
+  Sun,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "../store/app";
@@ -49,6 +51,8 @@ const DOWNLOAD_NAV: SubNavGroup[] = [
       { to: "/download/game", label: "游戏本体", icon: Download },
       { to: "/download/mod", label: "模组", icon: Puzzle },
       { to: "/download/pack", label: "整合包", icon: Package },
+      { to: "/download/resourcepack", label: "资源包", icon: Image },
+      { to: "/download/shader", label: "光影", icon: Sun },
       { to: "/download/java", label: "Java", icon: Coffee },
     ],
   },
@@ -87,7 +91,11 @@ function TitleBar() {
     if (key === "download") return pathname.startsWith("/download") || pathname.startsWith("/mod");
     if (key === "link") return pathname.startsWith("/link");
     if (key === "setup") return pathname.startsWith("/settings");
-    return pathname.startsWith("/more") || pathname.startsWith("/instances");
+    return (
+      pathname.startsWith("/more") ||
+      pathname.startsWith("/instances") ||
+      pathname.startsWith("/instance/")
+    );
   };
 
   const win = (fn: () => void) => () => {

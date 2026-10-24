@@ -11,7 +11,9 @@ mod launcher;
 mod minecraft;
 mod modpack;
 mod modrinth;
+mod paths;
 mod protocol;
+mod resources;
 mod settings;
 mod updater;
 
@@ -53,12 +55,34 @@ fn main() {
             instances::update_instance,
             instances::delete_instance,
             instances::open_instance_dir,
+            instances::migrate_instances_to_mc_folder,
+            instances::instance_paths,
+            paths::scan_game_folders,
+            paths::get_mc_folder,
+            paths::add_custom_game_folder,
+            paths::remove_custom_game_folder,
+            paths::switch_game_folder,
             instances::list_screenshots,
             instances::list_mods,
             instances::toggle_mod,
             instances::delete_mod,
             instances::install_mod_file,
             instances::open_mods_dir,
+            // 实例资源（存档 / 资源包 / 光影）
+            resources::open_game_subdir,
+            resources::instance_size,
+            resources::list_saves,
+            resources::delete_save,
+            resources::backup_save,
+            resources::list_resourcepacks,
+            resources::toggle_resourcepack,
+            resources::delete_resourcepack,
+            resources::list_shaderpacks,
+            resources::set_shaderpack,
+            resources::delete_shaderpack,
+            resources::import_pack_file,
+            resources::list_game_logs,
+            resources::read_game_log,
             // 启动
             launcher::launch_instance,
             launcher::stop_instance,
@@ -75,6 +99,7 @@ fn main() {
             modrinth::modrinth_recommend,
             modrinth::modrinth_versions,
             modrinth::modrinth_install,
+            modrinth::modrinth_install_resource,
             modrinth::modrinth_install_modpack,
             curseforge::cf_search,
             curseforge::cf_files,

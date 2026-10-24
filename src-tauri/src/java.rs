@@ -162,8 +162,12 @@ pub fn scan_javas(app: AppHandle) -> Vec<JavaInfo> {
 
 /// MC 版本 → 需要的 Java 主版本
 pub fn required_java_major(mc_version: &str) -> u32 {
-    let v = parse_mc_version(mc_version);
-    match v {
+    let (major, minor, patch) = parse_mc_version(mc_version);
+    // 26.x 起改用年份式版本号，统一要求 Java 25
+    if major >= 26 {
+        return 25;
+    }
+    match (major, minor, patch) {
         (1, minor, patch) if minor >= 21 || (minor == 20 && patch >= 5) => 21,
         (1, minor, _) if minor >= 18 => 17,
         (1, 17, _) => 16,
@@ -186,14 +190,19 @@ pub fn parse_mc_version(v: &str) -> (u32, u32, u32) {
 
 /// 按需求选择最合适的本机 Java（满足主版本 ≥ 需求的最小者）
 pub fn auto_select_java(app: &AppHandle, mc_version: &str) -> Result<JavaInfo, String> {
-    let need = required_java_major(mc_version);
+    auto_select_java_with(app, required_java_major(mc_version), mc_version)
+}
+
+/// 按指定主版本要求选择本机 Java：满足 ≥ need 的最小者。
+/// need 一般来自版本 JSON 的 javaVersion.majorVersion。
+pub fn auto_select_java_with(app: &AppHandle, need: u32, label: &str) -> Result<JavaInfo, String> {
     let javas = scan_javas(app.clone());
     let mut candidates: Vec<&JavaInfo> = javas.iter().filter(|j| j.major >= need).collect();
     candidates.sort_by(|a, b| a.major.cmp(&b.major));
     match candidates.first() {
         Some(j) => Ok((*j).clone()),
         None => Err(format!(
-            "未找到 Java {need} 或更高版本（MC {mc_version} 需要），请到 Java 管理页下载"
+            "未找到 Java {need} 或更高版本（{label} 需要 Java {need}），请到「下载 → Java」安装"
         )),
     }
 }

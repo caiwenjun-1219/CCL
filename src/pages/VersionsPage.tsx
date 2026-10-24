@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Download,
@@ -115,12 +115,17 @@ export default function VersionsPage() {
     };
   }, []);
 
-  const refreshInstalled = async () => {
-    if (!instance) {
-      setInstalled([]);
-      return;
+  /** 版本文件统一装在 Minecraft 文件夹下（PCL CE 布局），与实例文件夹解耦 */
+  const mcRoot = useCallback(async () => {
+    try {
+      return await api.getMcFolder();
+    } catch {
+      return instance?.game_dir || "";
     }
-    setInstalled(await api.localVersions(instance.game_dir));
+  }, [instance?.game_dir]);
+
+  const refreshInstalled = async () => {
+    setInstalled(await api.localVersions(await mcRoot()));
   };
 
   useEffect(() => {
@@ -184,7 +189,7 @@ export default function VersionsPage() {
         await downloadAsNewInstance(versionId);
       } else {
         setProgress({ phase: "开始下载", done: 0, total: 0 });
-        await api.installVersion(instance.game_dir, versionId);
+        await api.installVersion(await mcRoot(), versionId);
         if (instance.installed_version_id !== versionId) {
           await api.updateInstance(instance.id, { installed_version_id: versionId });
           loadInstances();
@@ -243,8 +248,8 @@ export default function VersionsPage() {
     try {
       const cmd =
         loaderKind === "fabric" || loaderKind === "quilt"
-          ? api.installLoader(instance.game_dir, mcVersion, loaderKind, loaderVersion)
-          : api.installForge(instance.game_dir, mcVersion, loaderKind, loaderVersion);
+          ? api.installLoader(await mcRoot(), mcVersion, loaderKind, loaderVersion)
+          : api.installForge(await mcRoot(), mcVersion, loaderKind, loaderVersion);
       const installedId = await cmd;
       await api.updateInstance(instance.id, {
         installed_version_id: installedId,
@@ -620,7 +625,7 @@ export default function VersionsPage() {
                       className="text-ccl-muted hover:text-red-400"
                       onClick={async () => {
                         if (!confirm(`删除版本 ${v}？`)) return;
-                        await api.deleteVersion(instance.game_dir, v);
+                        await api.deleteVersion(await mcRoot(), v);
                         refreshInstalled();
                       }}
                     >

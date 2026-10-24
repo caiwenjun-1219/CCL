@@ -524,3 +524,274 @@ export function PackRecommend({ onInstalled }: { onInstalled?: () => void }) {
     </div>
   );
 }
+
+// ------------------------------------------------------- 资源包 / 光影推荐
+
+const RP_CATS: { slug: string; label: string }[] = [
+  { slug: "", label: "综合热门" },
+  { slug: "realistic", label: "写实" },
+  { slug: "vanilla-like", label: "原版风" },
+  { slug: "simplistic", label: "简约" },
+  { slug: "themed", label: "主题" },
+  { slug: "16x", label: "16x" },
+  { slug: "32x", label: "32x" },
+  { slug: "128x", label: "128x" },
+  { slug: "512x+", label: "512x+" },
+  { slug: "models", label: "3D 模型" },
+  { slug: "fonts", label: "字体" },
+  { slug: "audio", label: "音效" },
+  { slug: "gui", label: "界面" },
+  { slug: "modded", label: "模组支持" },
+];
+
+const SHADER_CATS: { slug: string; label: string }[] = [
+  { slug: "", label: "综合热门" },
+  { slug: "realistic", label: "写实" },
+  { slug: "semi-realistic", label: "半写实" },
+  { slug: "vanilla-like", label: "原版风" },
+  { slug: "fantasy", label: "奇幻" },
+  { slug: "cartoon", label: "卡通" },
+  { slug: "atmosphere", label: "氛围" },
+  { slug: "shadows", label: "柔和阴影" },
+  { slug: "reflections", label: "屏幕反射" },
+  { slug: "colored-lighting", label: "彩色光照" },
+  { slug: "high", label: "高配" },
+  { slug: "potato", label: "低配可用" },
+  { slug: "path-tracing", label: "光追" },
+];
+
+/**
+ * 资源包 / 光影包推荐：从 Modrinth 拉热门项目，按实例 MC 版本过滤，一键装到对应目录。
+ * 资源包与加载器无关，因此不带 loader facet。
+ */
+export function ResourceRecommend({
+  instanceId,
+  kind,
+}: {
+  instanceId: string;
+  kind: "resourcepack" | "shader";
+}) {
+  const { instances, showToast } = useApp();
+  const inst = instances.find((i) => i.id === instanceId);
+  const cats = kind === "resourcepack" ? RP_CATS : SHADER_CATS;
+  const label = kind === "resourcepack" ? "资源包" : "光影包";
+
+  const [cat, setCat] = useState("");
+  const [hits, setHits] = useState<ProjectHit[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [openSlug, setOpenSlug] = useState<string | null>(null);
+  const [versions, setVersions] = useState<
+    { key: string; label: string; url: string; filename: string; sha1: string }[]
+  >([]);
+  const [vLoading, setVLoading] = useState(false);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [installed, setInstalled] = useState<string[]>([]);
+
+  const gv = inst?.minecraft_version || null;
+
+  const refreshInstalled = useCallback(async () => {
+    if (!instanceId) return;
+    try {
+      const list =
+        kind === "resourcepack"
+          ? await api.listResourcepacks(instanceId)
+          : await api.listShaderpacks(instanceId);
+      setInstalled(list.map((p) => p.file_name.toLowerCase()));
+    } catch {
+      setInstalled([]);
+    }
+  }, [instanceId, kind]);
+
+  useEffect(() => {
+    refreshInstalled();
+  }, [refreshInstalled]);
+
+  const isInstalled = (slug: string) =>
+    slug.length >= 5 && installed.some((n) => n.includes(slug.toLowerCase()));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    setOpenSlug(null);
+    try {
+      setHits(await api.modrinthRecommend(kind, cat || null, gv, null, "downloads", 0, 12));
+    } catch (e) {
+      setErr(String(e));
+      setHits([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [cat, gv, kind]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const openVersions = async (hit: ProjectHit) => {
+    if (openSlug === hit.slug) {
+      setOpenSlug(null);
+      return;
+    }
+    setOpenSlug(hit.slug);
+    setVersions([]);
+    setVLoading(true);
+    try {
+      const list = await api.modrinthVersions(hit.slug, gv, null);
+      setVersions(
+        list.map((v: Record<string, unknown>) => {
+          const files = (v.files as { url: string; filename: string; sha1: string }[]) || [];
+          const primary = files[0] || { url: "", filename: "", sha1: "" };
+          return {
+            key: String(v.id || v.version_number),
+            label: `${v.version_number || v.name} · ${((v.game_versions as string[]) || [])
+              .slice(0, 2)
+              .join(", ")}`,
+            url: primary.url,
+            filename: primary.filename,
+            sha1: primary.sha1 || "",
+          };
+        })
+      );
+    } catch (e) {
+      showToast(String(e), "bad");
+      setOpenSlug(null);
+    } finally {
+      setVLoading(false);
+    }
+  };
+
+  const install = async (v: { filename: string; url: string; sha1: string }) => {
+    if (!instanceId || !v.url) {
+      showToast("没有可下载的文件", "bad");
+      return;
+    }
+    setInstalling(v.filename);
+    try {
+      await api.modrinthInstallResource(instanceId, kind, v.url, v.filename, v.sha1 || null);
+      showToast(`${v.filename} 已装入 ${inst?.name || "实例"}`);
+      setOpenSlug(null);
+      refreshInstalled();
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  if (!instanceId) {
+    return (
+      <div className="card text-[12px] text-ccl-muted text-center py-10">
+        还没有实例。先在「下载」页装一个版本，{label}推荐就会按它的 MC 版本筛选。
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-2.5">
+        <Sparkles size={14} className="text-ccl-accent" />
+        <span className="text-[12px] font-bold">推荐{label}</span>
+        <span className="text-[11px] text-ccl-muted">
+          按 {inst?.minecraft_version} 筛选，按热度排序
+        </span>
+        <button className="btn btn-ghost !py-1 !px-2 ml-auto" onClick={load} disabled={loading}>
+          <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+
+      <div className="mb-3.5">
+        <CatBar cats={cats} value={cat} onChange={setCat} />
+      </div>
+
+      {err ? (
+        <div className="card py-7 text-center">
+          <p className="text-[12px] text-ccl-danger mb-2.5 px-4 break-all">{err}</p>
+          <button className="btn btn-ghost !h-7 !text-[12px]" onClick={load}>
+            <RefreshCw size={11} /> 重新加载
+          </button>
+        </div>
+      ) : loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+          <Skeleton n={6} />
+        </div>
+      ) : hits.length === 0 ? (
+        <div className="card text-[12px] text-ccl-muted py-8 text-center">
+          该分类下暂无适配 {inst?.minecraft_version} 的内容，换一个分类试试。
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+          {hits.map((hit) => {
+            const open = openSlug === hit.slug;
+            return (
+              <div
+                key={hit.project_id}
+                className={`card !p-3 transition-colors ${
+                  open ? "border-ccl-accent/60 bg-ccl-brush8/40" : "hover:border-ccl-accent/45"
+                }`}
+              >
+                <div className="flex items-start gap-2.5">
+                  <Icon hit={hit} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[13px] font-bold truncate leading-tight">{hit.title}</span>
+                      {isInstalled(hit.slug) && (
+                        <span className="shrink-0 text-[9.5px] leading-[14px] px-1 rounded-[2px] bg-[#eaf7ef] text-[#2f8a57] border border-[#bfe6cf]">
+                          已装
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10.5px] text-ccl-muted truncate">by {hit.author}</div>
+                    <p className="text-[11px] text-ccl-gray2 leading-snug line-clamp-2 mt-1">
+                      {hit.description}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center mt-2.5 pt-2 border-t border-ccl-gray7">
+                  <Meta hit={hit} />
+                  <button
+                    className="btn btn-primary !h-6 !px-2.5 !text-[11px] ml-auto"
+                    onClick={() => openVersions(hit)}
+                  >
+                    {open ? "收起" : <><Download size={10} /> 安装</>}
+                  </button>
+                </div>
+
+                {open && (
+                  <div className="mt-2 bg-ccl-panel2 rounded-[3px] p-1.5 max-h-44 overflow-auto">
+                    {vLoading ? (
+                      <div className="text-[11px] text-ccl-muted text-center py-3">
+                        <Loader2 size={13} className="animate-spin inline" /> 读取版本…
+                      </div>
+                    ) : versions.length === 0 ? (
+                      <div className="text-[11px] text-ccl-muted text-center py-3">
+                        没有适配当前实例的版本
+                      </div>
+                    ) : (
+                      versions.map((v) => (
+                        <button
+                          key={v.key}
+                          disabled={!!installing}
+                          onClick={() => install(v)}
+                          className="w-full text-left px-2 py-1.5 rounded-[2px] text-[11px] hover:bg-white flex items-center gap-2"
+                        >
+                          <span className="truncate flex-1">{v.label}</span>
+                          {installing === v.filename ? (
+                            <Loader2 size={11} className="animate-spin text-ccl-accent shrink-0" />
+                          ) : (
+                            <Download size={11} className="text-ccl-accent shrink-0" />
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

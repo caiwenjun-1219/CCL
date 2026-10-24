@@ -186,7 +186,7 @@ pub async fn modrinth_recommend(
     offset: u32,
     limit: Option<u32>,
 ) -> Result<Vec<ProjectHit>, String> {
-    if project_type != "mod" && project_type != "modpack" {
+    if !matches!(project_type.as_str(), "mod" | "modpack" | "resourcepack" | "shader" | "datapack") {
         return Err(format!("不支持的推荐类型: {project_type}"));
     }
     let idx = match index.as_deref() {
@@ -348,6 +348,31 @@ pub async fn modrinth_install(
         .join(&filename);
     let client = downloader::http_client();
     let task = DlTask::new(&format!("mod-{filename}"), &filename, &download_url, &dest).with_sha1(sha1);
+    downloader::download_one(&client, &app, &task).await?;
+    Ok(filename)
+}
+
+/// 下载安装资源包 / 光影包到指定实例的对应目录
+#[tauri::command]
+pub async fn modrinth_install_resource(
+    app: AppHandle,
+    instance_id: String,
+    kind: String,
+    download_url: String,
+    filename: String,
+    sha1: Option<String>,
+) -> Result<String, String> {
+    let folder = match kind.as_str() {
+        "resourcepack" => "resourcepacks",
+        "shader" | "shaderpack" => "shaderpacks",
+        _ => return Err(format!("不支持的资源类型: {kind}")),
+    };
+    let inst = instances::get_instance(&app, &instance_id)?;
+    let dir = std::path::PathBuf::from(&inst.game_dir).join(folder);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    let dest = dir.join(&filename);
+    let client = downloader::http_client();
+    let task = DlTask::new(&format!("{kind}-{filename}"), &filename, &download_url, &dest).with_sha1(sha1);
     downloader::download_one(&client, &app, &task).await?;
     Ok(filename)
 }

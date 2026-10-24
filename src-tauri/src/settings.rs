@@ -46,6 +46,23 @@ pub struct AppSettings {
     pub window_width: Option<u32>,
     #[serde(default)]
     pub window_height: Option<u32>,
+
+    // ---- PCL CE 风格：游戏目录与版本隔离 ----
+    /// Minecraft 文件夹路径（.minecraft 根），空 = 使用 %APPDATA%\.minecraft
+    #[serde(default)]
+    pub game_folder: String,
+    /// 版本隔离策略（对齐 PCL CE 的 LaunchArgumentIndieV2）：
+    /// 0 关闭 / 1 仅可装模组的实例 / 2 仅非正式版 / 3 两者 / 4 全部（默认）
+    #[serde(default = "default_isolation")]
+    pub version_isolation: u32,
+    /// 自定义 Minecraft 文件夹列表，格式「名称>绝对路径」
+    #[serde(default)]
+    pub custom_folders: Vec<String>,
+}
+
+/// PCL CE 默认值为 4：隔离所有实例
+fn default_isolation() -> u32 {
+    4
 }
 
 impl Default for AppSettings {
@@ -60,6 +77,9 @@ impl Default for AppSettings {
             java_path: String::new(),
             window_width: None,
             window_height: None,
+            game_folder: String::new(),
+            version_isolation: default_isolation(),
+            custom_folders: vec![],
         }
     }
 }

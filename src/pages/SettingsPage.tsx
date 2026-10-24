@@ -1,9 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { Save, RefreshCw, ArrowUpCircle, Loader2, KeyRound, FolderOpen } from "lucide-react";
+import {
+  Save,
+  RefreshCw,
+  ArrowUpCircle,
+  Loader2,
+  KeyRound,
+  FolderOpen,
+  FolderPlus,
+  HardDrive,
+  Layers,
+  Trash2,
+} from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useApp } from "../store/app";
-import { api } from "../lib/tauri";
+import { api, type GameFolder } from "../lib/tauri";
+
+/** PCL CE 版本隔离五档（对应后端 LaunchArgumentIndieV2） */
+const ISOLATION_OPTIONS: { value: number; label: string; desc: string }[] = [
+  { value: 4, label: "隔离所有实例", desc: "推荐。每个实例都有独立的存档、模组、资源包与设置" },
+  { value: 3, label: "非正式版与模组实例", desc: "快照版 / 远古版，以及 Fabric、Forge 等可装模组的实例" },
+  { value: 2, label: "仅非正式版", desc: "只隔离快照版、远古版与愚人节版" },
+  { value: 1, label: "仅可安装模组的实例", desc: "只隔离 Fabric / Forge / NeoForge / Quilt 类实例" },
+  { value: 0, label: "全部关闭", desc: "所有实例共用 Minecraft 文件夹，与官方启动器行为一致" },
+];
 
 /** PCL 设置项行：左标题+说明，右控件，底部极淡分隔线 */
 function Row({
@@ -26,8 +46,190 @@ function Row({
   );
 }
 
+/** 分区小标题（PCL 的卡片标题样式） */
+function Section({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <div className="flex items-center gap-1.5 pt-4 pb-1 mt-1 first:pt-0">
+      <span className="text-ccl-accent">{icon}</span>
+      <span className="text-[13px] font-bold text-ccl-gray1">{title}</span>
+    </div>
+  );
+}
+
 function Switch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
   return <div className="pcl-switch" data-on={on} onClick={() => onChange(!on)} role="switch" aria-checked={on} />;
+}
+
+/**
+ * Minecraft 文件夹选择（对齐 PCL CE 的「游戏文件夹」下拉）
+ *
+ * 目录模型：
+ * ```text
+ * <.minecraft>\versions\<实例名>\   实例文件夹（隔离时的游戏数据）
+ * <.minecraft>\versions\<版本 id>\  共享版本文件
+ * <.minecraft>\libraries  assets   共享库与资源
+ * ```
+ */
+function GameFolderPanel() {
+  const { settings, patchSettings, showToast, loadInstances } = useApp();
+  const [folders, setFolders] = useState<GameFolder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [migrating, setMigrating] = useState(false);
+
+  const current = settings.game_folder || "";
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      setFolders(await api.scanGameFolders());
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const pick = async () => {
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected || Array.isArray(selected)) return;
+    try {
+      await api.switchGameFolder(selected);
+      await patchSettings({ game_folder: selected });
+      showToast("已切换 Minecraft 文件夹");
+      await refresh();
+      await loadInstances();
+    } catch (e) {
+      showToast(String(e), "bad");
+    }
+  };
+
+  const addCurrent = async () => {
+    if (!current) return;
+    const name = current.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "自定义";
+    try {
+      await api.addCustomGameFolder(name, current);
+      await refresh();
+      showToast("已加入文件夹列表");
+    } catch (e) {
+      showToast(String(e), "bad");
+    }
+  };
+
+  const removeFolder = async (path: string) => {
+    try {
+      await api.removeCustomGameFolder(path);
+      await refresh();
+    } catch (e) {
+      showToast(String(e), "bad");
+    }
+  };
+
+  const migrate = async () => {
+    setMigrating(true);
+    try {
+      const n = await api.migrateInstancesToMcFolder();
+      await loadInstances();
+      showToast(n > 0 ? `已迁移 ${n} 个实例到 Minecraft 文件夹` : "没有需要迁移的实例");
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setMigrating(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 border border-ccl-gray6 rounded-[4px] p-3 bg-ccl-panel2/40">
+      <div className="flex items-center gap-2">
+        <HardDrive size={13} className="text-ccl-accent shrink-0" />
+        <span className="text-[12.5px] font-bold">Minecraft 文件夹</span>
+        {loading && <Loader2 size={12} className="animate-spin text-ccl-gray4" />}
+        <button className="btn !h-[26px] !text-[11.5px] ml-auto" onClick={refresh} disabled={loading}>
+          <RefreshCw size={11} /> 刷新
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2 mt-2.5">
+        <select
+          className="field !flex-1 !min-w-0"
+          value={current}
+          onChange={async (e) => {
+            const v = e.target.value;
+            if (!v) return;
+            try {
+              await api.switchGameFolder(v);
+              await patchSettings({ game_folder: v });
+              await loadInstances();
+              showToast("已切换 Minecraft 文件夹");
+            } catch (err) {
+              showToast(String(err), "bad");
+            }
+          }}
+        >
+          {!current && <option value="">（默认）%APPDATA%\.minecraft</option>}
+          {folders.map((f) => (
+            <option key={f.location} value={f.location}>
+              {f.name}
+              {f.kind === "custom" ? "（自定义）" : ""} — {f.location}
+            </option>
+          ))}
+          {current && !folders.some((f) => f.location === current) && (
+            <option value={current}>{current}</option>
+          )}
+        </select>
+        <button className="btn !h-[30px] shrink-0" onClick={pick}>
+          <FolderPlus size={12} /> 浏览
+        </button>
+      </div>
+
+      <div className="text-[11px] text-ccl-gray4 mt-1.5 font-mono break-all">
+        {current || `%APPDATA%\\.minecraft（默认，尚未写入设置）`}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mt-2.5 pt-2.5 border-t border-ccl-gray6">
+        <button className="btn !h-[26px] !text-[11.5px]" onClick={addCurrent} disabled={!current}>
+          <FolderPlus size={11} /> 收藏当前文件夹
+        </button>
+        <button
+          className="btn !h-[26px] !text-[11.5px]"
+          onClick={migrate}
+          disabled={migrating}
+          title="把早期版本创建的实例（AppData\com.caiwenjun.ccl\instances）搬进 Minecraft 文件夹"
+        >
+          {migrating ? <Loader2 size={11} className="animate-spin" /> : <Layers size={11} />}
+          迁移旧实例
+        </button>
+        <span className="text-[11px] text-ccl-gray4 ml-auto">
+          切换文件夹后需重新加载实例列表
+        </span>
+      </div>
+
+      {folders.filter((f) => f.kind === "custom").length > 0 && (
+        <div className="mt-2 pt-2 border-t border-ccl-gray6">
+          {folders
+            .filter((f) => f.kind === "custom")
+            .map((f) => (
+              <div key={f.location} className="flex items-center gap-2 py-1">
+                <span className="text-[11.5px] text-ccl-gray2 shrink-0">{f.name}</span>
+                <span className="text-[11px] text-ccl-gray4 font-mono truncate flex-1">
+                  {f.location}
+                </span>
+                <button
+                  className="icon-danger shrink-0"
+                  title="移除"
+                  onClick={() => removeFolder(f.location)}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -99,6 +301,35 @@ export default function SettingsPage() {
       {/* -------------------------------------------------- 启动 */}
       {tab === "launch" && (
         <div className="mt-5">
+          <Section icon={<HardDrive size={13} />} title="游戏目录" />
+          <div className="text-[11.5px] text-ccl-gray3 leading-relaxed mb-2">
+            采用与 PCL CE 相同的目录结构：<span className="font-mono">.minecraft\versions\&lt;实例名&gt;</span>{" "}
+            存放实例，<span className="font-mono">libraries</span> 与{" "}
+            <span className="font-mono">assets</span> 全局共享。
+          </div>
+          <GameFolderPanel />
+
+          <Row
+            label="版本隔离"
+            desc="决定实例是否拥有独立的存档、模组与设置。隔离时 --gameDir 指向实例文件夹，否则指向 Minecraft 文件夹根。"
+          >
+            <select
+              className="field !w-[300px]"
+              value={draft.version_isolation}
+              onChange={(e) => commit({ version_isolation: Number(e.target.value) })}
+            >
+              {ISOLATION_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <div className="text-[11.5px] text-ccl-gray4 -mt-1 mb-1 pl-1">
+            {ISOLATION_OPTIONS.find((o) => o.value === draft.version_isolation)?.desc}
+          </div>
+
+          <Section icon={<Layers size={13} />} title="运行环境" />
           <Row label="默认最大内存" desc="新建实例时使用，单位 MB。建议 2048 ~ 8192。">
             <input
               className="field !w-[120px] text-right"

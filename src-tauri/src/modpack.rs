@@ -84,6 +84,12 @@ async fn import_mrpack(
             break;
         }
     }
+    // 先装原版本体（client jar + libraries + assets）。没有本体，加载器实例启动时
+    // KnotClient 会 ClassNotFoundException（找不到 net.minecraft.client.main.Main）。
+    emit(app, "下载游戏本体", 0, 3);
+    crate::minecraft::mc_install_version(app.clone(), crate::paths::mc_root(&app, &inst).to_string_lossy().to_string(), mc_version.clone())
+        .await?;
+
     install_loader_for_instance(app, &inst, loader_kind, loader_version.as_deref()).await?;
 
     // 下载 files
@@ -188,6 +194,11 @@ async fn import_curseforge(
             loader_version = Some(rest.to_string());
         }
     }
+    // 先装原版本体，理由同 mrpack 分支
+    emit(app, "下载游戏本体", 0, 3);
+    crate::minecraft::mc_install_version(app.clone(), crate::paths::mc_root(&app, &inst).to_string_lossy().to_string(), mc_version.clone())
+        .await?;
+
     install_loader_for_instance(app, &inst, loader_kind, loader_version.as_deref()).await?;
 
     // 逐个解析模组文件并下载
@@ -272,7 +283,7 @@ async fn install_loader_for_instance(
         "vanilla" => {
             minecraft::mc_install_version(
                 app.clone(),
-                inst.game_dir.clone(),
+                crate::paths::mc_root(&app, &inst).to_string_lossy().to_string(),
                 inst.minecraft_version.clone(),
             )
             .await?
@@ -281,7 +292,7 @@ async fn install_loader_for_instance(
             let v = version.ok_or(format!("整合包未指定 {kind} 版本"))?;
             minecraft::mc_install_loader(
                 app.clone(),
-                inst.game_dir.clone(),
+                crate::paths::mc_root(&app, &inst).to_string_lossy().to_string(),
                 inst.minecraft_version.clone(),
                 kind.to_string(),
                 v.to_string(),
@@ -292,7 +303,7 @@ async fn install_loader_for_instance(
             let v = version.ok_or(format!("整合包未指定 {kind} 版本"))?;
             minecraft::mc_install_forge(
                 app.clone(),
-                inst.game_dir.clone(),
+                crate::paths::mc_root(&app, &inst).to_string_lossy().to_string(),
                 inst.minecraft_version.clone(),
                 kind.to_string(),
                 v.to_string(),
@@ -310,6 +321,7 @@ async fn install_loader_for_instance(
             installed_version_id: Some(installed_id),
             loader_version: version.map(|v| v.to_string()),
             loader: Some(kind.to_string()),
+            ..Default::default()
         },
     )?;
     Ok(())

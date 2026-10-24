@@ -242,6 +242,51 @@ async fn fetch_version_json(client: &reqwest::Client, url: &str, prefer: bool) -
     Err(format!("获取版本 JSON 失败({url}): {last_err}"))
 }
 
+/// 为缺少 downloads 的库（fabric/quilt profile 只给 name + maven 仓库地址）补出下载信息，
+/// 否则 install_version 会直接跳过，导致 fabric-loader 本体永远下不下来。
+pub fn ensure_library_downloads(lib: &mut Value) {
+    let has_url = lib
+        .pointer("/downloads/artifact/url")
+        .and_then(|u| u.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if has_url {
+        return;
+    }
+    let Some(name) = lib.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    let path = name_to_path(&name).display().to_string().replace('\\', "/");
+    let mut urls: Vec<String> = Vec::new();
+    // profile 自带的仓库地址优先（如 https://maven.fabricmc.net/）
+    if let Some(base) = lib
+        .get("url")
+        .and_then(|u| u.as_str())
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+    {
+        urls.push(format!("{base}/{path}"));
+    }
+    if name.starts_with("net.fabricmc:") {
+        urls.push(format!("https://maven.fabricmc.net/{path}"));
+    }
+    if name.starts_with("org.quiltmc:") {
+        urls.push(format!("https://maven.quiltmc.org/repository/release/{path}"));
+    }
+    urls.push(format!("https://repo1.maven.org/maven2/{path}"));
+    if urls.is_empty() {
+        return;
+    }
+    let mut artifact = serde_json::json!({ "path": path, "url": urls[0] });
+    if urls.len() > 1 {
+        artifact["fallbacks"] = serde_json::json!(urls[1..].to_vec());
+    }
+    lib["downloads"] = serde_json::json!({ "artifact": artifact });
+}
+
 /// 安装一个完整版本（json 已合并好）：client jar / libraries / assets / natives
 /// full_assets=false 时只抽样下载少量资源对象（用于版本单独测试，避免全量下载）
 async fn install_version(
@@ -594,7 +639,7 @@ pub async fn mc_download_as_instance(
         max_memory,
     )?;
 
-    match install_version(&app, Path::new(&inst.game_dir), &version_id, &vjson, true).await {
+    match install_version(&app, &crate::paths::mc_root(&app, &inst), &version_id, &vjson, true).await {
         Ok(()) => crate::instances::update_instance(
             app.clone(),
             inst.id.clone(),
@@ -1091,14 +1136,49 @@ pub async fn mc_install_loader(
             for (k, v) in child {
                 match k.as_str() {
                     "libraries" => {
-                        // 合并 libraries 数组
+                        // 合并 libraries 数组；loader profile 的库只有 name + 仓库地址，
+                        // 先补出 downloads，否则下载阶段会整条跳过（fabric-loader 本体就没了）
                         let mut libs = map.get("libraries").cloned().unwrap_or(json!([]));
                         if let Value::Array(parent_libs) = &mut libs {
                             if let Value::Array(child_libs) = v {
-                                parent_libs.extend(child_libs.iter().cloned());
+                                for c in child_libs {
+                                    let mut c = c.clone();
+                                    ensure_library_downloads(&mut c);
+                                    parent_libs.push(c);
+                                }
                             }
                         }
                         map.insert(k.clone(), libs);
+                    }
+                    "downloads" => {
+                        // 不给 loader 版本继承原版的 client jar 下载项：
+                        // 否则会把原版 jar 下到 versions/<loader>/<loader>.jar，
+                        // 真正的 loader jar 反而没人下，启动时 ClassNotFoundException
+                    }
+                    "arguments" => {
+                        // 按 game / jvm 分别追加，不能整体覆盖：
+                        // loader JSON 的 arguments 只带自身的 jvm 参数（如 -DFabricMcEmu=），
+                        // game 往往是空数组，覆盖掉原版就会丢掉 --username 等必需参数
+                        let mut merged_args = map.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                        if let (Value::Object(dst), Value::Object(src)) = (&mut merged_args, v) {
+                            for key in ["game", "jvm"] {
+                                let mut base = dst
+                                    .get(key)
+                                    .and_then(|x| x.as_array())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                if let Some(add) = src.get(key).and_then(|x| x.as_array()) {
+                                    base.extend(add.iter().cloned());
+                                }
+                                dst.insert(key.to_string(), Value::Array(base));
+                            }
+                            for (k2, v2) in src {
+                                if k2 != "game" && k2 != "jvm" {
+                                    dst.insert(k2.clone(), v2.clone());
+                                }
+                            }
+                        }
+                        map.insert("arguments".into(), merged_args);
                     }
                     "inheritsFrom" => {}
                     _ => {

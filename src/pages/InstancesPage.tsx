@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Trash2, FolderOpen, Puzzle, RefreshCw, Loader2 } from "lucide-react";
+import { Plus, Trash2, FolderOpen, Puzzle, Settings2, Loader2 } from "lucide-react";
 import { useApp } from "../store/app";
 import { api } from "../lib/tauri";
 
@@ -11,6 +11,21 @@ const LOADERS = [
   { id: "neoforge", label: "NeoForge", desc: "Forge 继任者，大型模组包首选" },
   { id: "forge", label: "Forge", desc: "老牌加载器，1.20.2 及以下常用" },
 ];
+
+/** 最近游玩时间 → 相对描述 */
+function relTime(iso: string | null | undefined) {
+  if (!iso) return "从未启动";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 1) return "刚刚";
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} 小时前`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d} 天前`;
+  return new Date(t).toLocaleDateString("zh-CN");
+}
 
 export default function InstancesPage() {
   const navigate = useNavigate();
@@ -54,14 +69,19 @@ export default function InstancesPage() {
                 <th className="text-left px-4 py-2.5 font-medium">MC 版本</th>
                 <th className="text-left px-4 py-2.5 font-medium">加载器</th>
                 <th className="text-left px-4 py-2.5 font-medium">内存</th>
+                <th className="text-left px-4 py-2.5 font-medium">最近游玩</th>
                 <th className="text-left px-4 py-2.5 font-medium">状态</th>
                 <th className="text-right px-4 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
               {instances.map((inst) => (
-                <tr key={inst.id} className="border-b border-ccl-border/50 hover:bg-white/3">
-                  <td className="px-4 py-2.5 font-semibold">{inst.name}</td>
+                <tr
+                  key={inst.id}
+                  className="border-b border-ccl-border/50 hover:bg-white/3 cursor-pointer"
+                  onClick={() => navigate(`/instance/${inst.id}`)}
+                >
+                  <td className="px-4 py-2.5 font-semibold text-ccl-accent">{inst.name}</td>
                   <td className="px-4 py-2.5 text-ccl-muted">{inst.minecraft_version}</td>
                   <td className="px-4 py-2.5">
                     <span className="tag">{LOADERS.find((l) => l.id === inst.loader)?.label || inst.loader}</span>
@@ -70,6 +90,7 @@ export default function InstancesPage() {
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-ccl-muted">{inst.max_memory || 4096} MB</td>
+                  <td className="px-4 py-2.5 text-ccl-muted text-[12px]">{relTime(inst.last_played)}</td>
                   <td className="px-4 py-2.5">
                     {inst.loader === "vanilla" || inst.installed_version_id ? (
                       <span className="tag tag-green">就绪</span>
@@ -77,9 +98,16 @@ export default function InstancesPage() {
                       <span className="tag tag-orange">待安装版本</span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <button
                       className="btn btn-ghost !py-1 !px-2.5"
+                      title="版本设置"
+                      onClick={() => navigate(`/instance/${inst.id}?tab=settings`)}
+                    >
+                      <Settings2 size={13} />
+                    </button>
+                    <button
+                      className="btn btn-ghost !py-1 !px-2.5 ml-1"
                       title="模组管理"
                       onClick={() => navigate(`/more/mods?instance=${inst.id}`)}
                     >

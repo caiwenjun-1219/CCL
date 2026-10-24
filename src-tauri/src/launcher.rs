@@ -100,8 +100,19 @@ fn arg_strings(value: &Value) -> Vec<String> {
 }
 
 /// 组装 classpath：版本 jar + 所有允许的 libraries
-fn build_classpath(game_dir: &PathBuf, version_id: &str, vjson: &Value) -> String {
+fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson: &Value) -> String {
     let mut paths: Vec<String> = vec![];
+    // 加载器实例的原版 client jar 落在父版本目录（versions/<mc>/<mc>.jar），
+    // 合并安装时不会复制到 loader 目录，但启动必须带上，否则找不到 net.minecraft.*
+    if version_id != mc_version {
+        let parent_jar = game_dir
+            .join("versions")
+            .join(mc_version)
+            .join(format!("{mc_version}.jar"));
+        if parent_jar.exists() {
+            paths.push(parent_jar.to_string_lossy().to_string());
+        }
+    }
     let version_jar = game_dir
         .join("versions")
         .join(version_id)
@@ -174,6 +185,37 @@ pub struct LaunchInfo {
     pub java_major: u32,
 }
 
+/// 读取原版（父）版本 JSON 作为启动参数模板；本地没有就从版本清单拉一份并缓存。
+/// 用于修复早期安装的加载器实例缺失原版启动参数（--username 等）的问题。
+/// 缓存放 CCL 数据目录而不是 versions/，避免被当成「已安装版本」。
+async fn ensure_parent_version_json(
+    app: &AppHandle,
+    mc_version: &str,
+) -> Option<Value> {
+    let cache_dir = crate::settings::data_dir(app).join("vanilla-json");
+    let cache = cache_dir.join(format!("{mc_version}.json"));
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            return Some(v);
+        }
+    }
+    let manifest = crate::minecraft::mc_version_manifest(app.clone()).await.ok()?;
+    let entry = manifest.into_iter().find(|e| e.id == mc_version)?;
+    let client = crate::downloader::http_client();
+    let resp = client
+        .get(&entry.url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .ok()?;
+    let v: Value = resp.json().await.ok()?;
+    let _ = std::fs::create_dir_all(&cache_dir);
+    if let Ok(text) = serde_json::to_string(&v) {
+        let _ = std::fs::write(&cache, text);
+    }
+    Some(v)
+}
+
 /// 启动实例
 #[tauri::command]
 pub async fn launch_instance(
@@ -240,25 +282,23 @@ pub async fn launch_instance(
         account
     };
 
-    let java_info = if !s.java_path.is_empty() {
-        java::JavaInfo {
-            path: s.java_path.clone(),
-            major: java::required_java_major(&instance.minecraft_version),
-            version: String::new(),
-            vendor: "手动指定".into(),
-            managed: false,
-        }
-    } else {
-        java::auto_select_java(&app, &instance.minecraft_version)?
-    };
+    // Java 选择推迟到读完版本 JSON 之后，才能按 JSON 里声明的 javaVersion 精确匹配
+    let instance_java = instance
+        .java_path
+        .as_ref()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
 
-    let game_dir = PathBuf::from(&instance.game_dir);
+    // MC 根：versions / libraries / assets 都在这里（新布局恒为 .minecraft）
+    let mc_root = crate::paths::mc_root(&app, &instance);
+    // --gameDir：由版本隔离策略决定（PCL CE 的 PathIndie）
+    let game_dir = crate::paths::resolve_game_dir(&app, &instance);
     let version_id = instance
         .installed_version_id
         .clone()
         .unwrap_or_else(|| instance.minecraft_version.clone());
 
-    let vjson_path = game_dir
+    let vjson_path = mc_root
         .join("versions")
         .join(&version_id)
         .join(format!("{version_id}.json"));
@@ -269,12 +309,84 @@ pub async fn launch_instance(
     let vjson: Value = serde_json::from_str(&vjson_text).map_err(|e| e.to_string())?;
     let parsed: VersionJson = serde_json::from_value(vjson.clone()).map_err(|e| e.to_string())?;
 
-    let classpath = build_classpath(&game_dir, &version_id, &vjson);
+    // Java 选择优先级：实例指定 → 全局指定 → 自动。
+    // 需要的主版本优先取版本 JSON 的 javaVersion.majorVersion（最准，PCL 也这么做），
+    // 缺失时才按 MC 版本号推断（26.x 这类新命名靠推断会翻车）。
+    let need_java = vjson
+        .get("javaVersion")
+        .and_then(|j| j.get("majorVersion"))
+        .and_then(|m| m.as_u64())
+        .map(|m| m as u32)
+        .unwrap_or_else(|| java::required_java_major(&instance.minecraft_version));
+    let java_info = if let Some(path) = instance_java {
+        java::JavaInfo {
+            path,
+            major: need_java,
+            version: String::new(),
+            vendor: "实例指定".into(),
+            managed: false,
+        }
+    } else if !s.java_path.is_empty() {
+        java::JavaInfo {
+            path: s.java_path.clone(),
+            major: need_java,
+            version: String::new(),
+            vendor: "手动指定".into(),
+            managed: false,
+        }
+    } else {
+        java::auto_select_java_with(&app, need_java, &instance.minecraft_version)?
+    };
+
+    // 兼容旧版合并缺陷：早期安装的加载器版本 JSON 只保留了 loader 自己的 arguments，
+    // 原版的 game 参数（--username / --gameDir / --assetsDir 等）被整体覆盖丢失。
+    // 这里若发现 game 参数为空，就从同实例下的原版版本 JSON 补回一份。
+    let mut base_args: Option<(Vec<Value>, Vec<Value>)> = None;
+    let game_args_empty = vjson
+        .pointer("/arguments/game")
+        .and_then(|g| g.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(false);
+    if game_args_empty && version_id != instance.minecraft_version {
+        // 父版本 JSON 可能没被装上（早期整合包导入只装了 loader 版本），必要时补拉一份
+        let parent = ensure_parent_version_json(&app, &instance.minecraft_version).await;
+        if let Some(pv) = parent {
+            let g = pv
+                .pointer("/arguments/game")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let j = pv
+                .pointer("/arguments/jvm")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if !g.is_empty() {
+                base_args = Some((g, j));
+            }
+        }
+    }
+
+    // 加载器实例必须先有原版本体（client jar），否则一定启动失败
+    if version_id != instance.minecraft_version {
+        let parent_jar = mc_root
+            .join("versions")
+            .join(&instance.minecraft_version)
+            .join(format!("{}.jar", instance.minecraft_version));
+        if !parent_jar.exists() {
+            return Err(format!(
+                "缺少游戏本体：{} 的客户端 jar 不存在。请在「下载 → 游戏本体」重新下载该版本",
+                instance.minecraft_version
+            ));
+        }
+    }
+
+    let classpath = build_classpath(&mc_root, &version_id, &instance.minecraft_version, &vjson);
     if classpath.is_empty() {
         return Err("classpath 为空，版本可能未完整安装".into());
     }
-    let natives_dir = game_dir.join("versions").join(&version_id).join("natives");
-    let assets_root = game_dir.join("assets");
+    let natives_dir = mc_root.join("versions").join(&version_id).join("natives");
+    let assets_root = mc_root.join("assets");
     let asset_index_name = parsed
         .asset_index
         .as_ref()
@@ -296,12 +408,15 @@ pub async fn launch_instance(
     vars.insert("classpath".into(), classpath.clone());
     vars.insert("version".into(), version_id.clone());
     vars.insert("version_name".into(), version_id.clone());
-    // 初始窗口尺寸：取启动器窗口尺寸，失败则回退 854x480
-    let (rw, rh) = app
-        .get_webview_window("main")
-        .and_then(|w| w.inner_size().ok())
-        .map(|s| (s.width.to_string(), s.height.to_string()))
-        .unwrap_or_else(|| ("854".into(), "480".into()));
+    // 初始窗口尺寸：实例设置优先，否则取启动器窗口尺寸，失败则回退 854x480
+    let (rw, rh) = match (instance.window_width, instance.window_height) {
+        (Some(w), Some(h)) if w >= 320 && h >= 240 => (w.to_string(), h.to_string()),
+        _ => app
+            .get_webview_window("main")
+            .and_then(|w| w.inner_size().ok())
+            .map(|s| (s.width.to_string(), s.height.to_string()))
+            .unwrap_or_else(|| ("854".into(), "480".into())),
+    };
     vars.insert("resolution_width".into(), rw);
     vars.insert("resolution_height".into(), rh);
     vars.insert("clientid".into(), "ccl-client".into());
@@ -314,11 +429,23 @@ pub async fn launch_instance(
     vars.insert("launcher_name".into(), "CwjCraftLauncher".into());
     vars.insert("launcher_version".into(), env!("CARGO_PKG_VERSION").into());
 
-    // ---- JVM 参数
+    // ---- JVM 参数（实例设置 > 全局设置）
     let memory = instance.max_memory.unwrap_or(s.max_memory);
-    let mut jvm_args: Vec<String> = vec![format!("-Xmx{memory}M")];
-    if !s.jvm_args.trim().is_empty() {
-        for part in s.jvm_args.split_whitespace() {
+    let mut jvm_args: Vec<String> = Vec::new();
+    if let Some(min) = instance.min_memory {
+        if min > 0 {
+            jvm_args.push(format!("-Xms{min}M"));
+        }
+    }
+    jvm_args.push(format!("-Xmx{memory}M"));
+    let extra_jvm = instance
+        .jvm_args
+        .as_deref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| s.jvm_args.trim());
+    if !extra_jvm.is_empty() {
+        for part in extra_jvm.split_whitespace() {
             jvm_args.push(part.to_string());
         }
     }
@@ -326,17 +453,28 @@ pub async fn launch_instance(
         "-Djava.library.path={}",
         natives_dir.to_string_lossy()
     ));
+    if let Some((_, base_jvm)) = &base_args {
+        for a in base_jvm {
+            jvm_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
+        }
+    }
     if let Some(args) = &parsed.arguments {
         for a in &args.jvm {
             jvm_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
         }
-    } else {
+    }
+    if base_args.is_none() && parsed.arguments.is_none() {
         jvm_args.push("-cp".into());
         jvm_args.push(classpath.clone());
     }
 
     // ---- 游戏参数
     let mut game_args: Vec<String> = vec![];
+    if let Some((base_game, _)) = &base_args {
+        for a in base_game {
+            game_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
+        }
+    }
     if let Some(args) = &parsed.arguments {
         for a in &args.game {
             game_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
@@ -344,6 +482,47 @@ pub async fn launch_instance(
     } else if let Some(legacy) = &parsed.minecraft_arguments {
         for part in legacy.split(' ') {
             game_args.push(substitute(part, &vars));
+        }
+    }
+
+    // ---- 实例级游戏参数追加（附加参数 → 全屏 → 自动进服）
+    if let Some(extra) = instance.game_args.as_deref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        for part in extra.split_whitespace() {
+            game_args.push(substitute(part, &vars));
+        }
+    }
+    if instance.fullscreen {
+        game_args.push("--fullscreen".into());
+    }
+    if let Some(addr) = instance
+        .auto_join_server
+        .as_deref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        // 1.20 起 --server/--port 被移除，改用 --quickPlayMultiplayer
+        // 注意版本号有两种命名：1.21.11（major=1）与 26.2（major=26），都不能只看第二段
+        let modern = {
+            let mut it = instance.minecraft_version.split('.');
+            let major: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+            if major > 1 {
+                true
+            } else {
+                it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) >= 20
+            }
+        };
+        if modern {
+            game_args.push("--quickPlayMultiplayer".into());
+            game_args.push(addr.to_string());
+        } else {
+            let (host, port) = match addr.rsplit_once(':') {
+                Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, p),
+                _ => (addr, "25565"),
+            };
+            game_args.push("--server".into());
+            game_args.push(host.to_string());
+            game_args.push("--port".into());
+            game_args.push(port.to_string());
         }
     }
 
@@ -377,7 +556,7 @@ pub async fn launch_instance(
 
     // 启动诊断日志：完整命令行 + 退出码，便于排查启动失败
     {
-        let dbg_log = game_dir.join("ccl-launch.log");
+        let dbg_log = mc_root.join("ccl-launch.log");
         let mut line = format!(
             "[{}] java={} cwd={}\n  {}\n",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
@@ -414,8 +593,22 @@ pub async fn launch_instance(
     if let Some(err) = child.stderr.take() {
         let iid = instance_id.clone();
         let app_err = app.clone();
+        let err_log = mc_root.join("ccl-launch.log");
         std::thread::spawn(move || {
+            // 前若干行同时落盘，启动失败时可直接看 ccl-launch.log 定位原因
+            let mut logged = 0;
             for line in BufReader::new(err).lines().map_while(Result::ok) {
+                if logged < 40 {
+                    logged += 1;
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&err_log)
+                    {
+                        let _ = writeln!(f, "[stderr] {line}");
+                    }
+                }
                 let _ = app_err.emit(
                     "game-log",
                     GameLogEvent { instance_id: iid.clone(), line },
@@ -461,7 +654,7 @@ pub async fn launch_instance(
                 let _ = dir;
             }
             if let Ok(inst) = crate::instances::get_instance(&app_exit, &iid3) {
-                let dbg_log = std::path::Path::new(&inst.game_dir).join("ccl-launch.log");
+                let dbg_log = crate::paths::mc_root(&app_exit, &inst).join("ccl-launch.log");
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&dbg_log) {
                     let _ = writeln!(
                         f,
@@ -475,6 +668,13 @@ pub async fn launch_instance(
     });
 
     processes.0.lock().unwrap().insert(instance_id.clone(), child);
+
+    // 记录最近游玩时间（主页按此排序）
+    {
+        let mut updated = instance.clone();
+        updated.last_played = Some(chrono::Utc::now().to_rfc3339());
+        let _ = crate::instances::save_instance(&app, &updated);
+    }
 
     Ok(LaunchInfo {
         instance_id,

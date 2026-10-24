@@ -36,6 +36,9 @@ const defaultSettings: AppSettings = {
   java_path: "",
   window_width: null,
   window_height: null,
+  game_folder: "",
+  version_isolation: 4,
+  custom_folders: [],
 };
 
 export const useApp = create<AppState>((set, get) => ({

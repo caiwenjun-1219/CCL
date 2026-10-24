@@ -5,6 +5,8 @@ import InstancesPage from "./pages/InstancesPage";
 import VersionsPage from "./pages/VersionsPage";
 import ModsPage from "./pages/ModsPage";
 import ModManagePage from "./pages/ModManagePage";
+import InstanceDetailPage from "./pages/InstanceDetailPage";
+import ResourcePage from "./pages/ResourcePage";
 import ModpacksPage from "./pages/ModpacksPage";
 import JavaPage from "./pages/JavaPage";
 import AccountsPage from "./pages/AccountsPage";
@@ -28,6 +30,8 @@ export default function App() {
         <Route path="/download/game" element={<VersionsPage />} />
         <Route path="/download/mod" element={<ModsPage />} />
         <Route path="/download/pack" element={<ModpacksPage />} />
+        <Route path="/download/resourcepack" element={<ResourcePage kind="resourcepack" />} />
+        <Route path="/download/shader" element={<ResourcePage kind="shader" />} />
         <Route path="/download/java" element={<JavaPage />} />
 
         {/* 联机 */}
@@ -39,6 +43,8 @@ export default function App() {
         {/* 更多 */}
         <Route path="/more" element={<Navigate to="/more/version" replace />} />
         <Route path="/more/version" element={<InstancesPage />} />
+        {/* 实例详情（PCL 的「版本设置」） */}
+        <Route path="/instance/:id" element={<InstanceDetailPage />} />
         <Route path="/more/mods" element={<ModManagePage />} />
         <Route path="/more/account" element={<AccountsPage />} />
         <Route path="/more/about" element={<AboutPage />} />

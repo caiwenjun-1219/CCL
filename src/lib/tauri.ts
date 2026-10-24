@@ -13,6 +13,29 @@ export interface AppSettings {
   java_path: string;
   window_width: number | null;
   window_height: number | null;
+  /** Minecraft 文件夹（.minecraft 根），空 = %APPDATA%\.minecraft */
+  game_folder: string;
+  /** 版本隔离策略 0 关闭 / 1 仅模组实例 / 2 仅非正式版 / 3 两者 / 4 全部 */
+  version_isolation: number;
+  /** 自定义文件夹列表，格式「名称>路径」 */
+  custom_folders: string[];
+}
+
+/** 可选的 Minecraft 文件夹 */
+export interface GameFolder {
+  name: string;
+  location: string;
+  kind: "original" | "custom";
+}
+
+/** 实例的路径信息（PCL CE 风格） */
+export interface InstancePaths {
+  mc_root: string;
+  game_dir: string;
+  instance_folder: string | null;
+  isolation_label: string;
+  isolated: boolean;
+  legacy: boolean;
 }
 
 export interface Instance {
@@ -25,6 +48,48 @@ export interface Instance {
   created_at: string;
   max_memory: number | null;
   game_dir: string;
+  /** 版本设置（对齐 PCL：按实例独立） */
+  min_memory?: number | null;
+  java_path?: string | null;
+  jvm_args?: string | null;
+  game_args?: string | null;
+  window_width?: number | null;
+  window_height?: number | null;
+  fullscreen?: boolean;
+  auto_join_server?: string | null;
+  last_played?: string | null;
+  /** 新布局：在 <.minecraft>\versions\ 下的文件夹名；null = 旧布局 */
+  folder_name?: string | null;
+  /** 版本隔离覆盖：null/-1 跟随全局，1 强制隔离，2 强制不隔离 */
+  version_isolation?: number | null;
+}
+
+/** 存档 */
+export interface SaveInfo {
+  dir_name: string;
+  level_name: string;
+  size: number;
+  mtime: number;
+  /** data:image/png;base64,... */
+  icon: string | null;
+}
+
+/** 资源包 / 光影包 */
+export interface PackInfo {
+  file_name: string;
+  display_name: string;
+  description: string;
+  size: number;
+  mtime: number;
+  enabled: boolean;
+  is_dir: boolean;
+  incompatible: boolean;
+}
+
+export interface LogFile {
+  name: string;
+  size: number;
+  mtime: number;
 }
 
 export interface ModInfo {
@@ -216,12 +281,62 @@ export const api = {
       installed_version_id?: string;
       loader_version?: string;
       loader?: string;
+      min_memory?: number;
+      java_path?: string;
+      jvm_args?: string;
+      game_args?: string;
+      window_width?: number;
+      window_height?: number;
+      fullscreen?: boolean;
+      auto_join_server?: string;
+      /** 0 跟随全局 / 1 强制隔离 / 2 强制不隔离 */
+      version_isolation?: number;
     }
   ) => invoke<Instance>("update_instance", { id, patch }),
-  deleteInstance: (id: string) => invoke("delete_instance", { id }),
+  deleteInstance: (id: string, removeFiles = true) =>
+    invoke("delete_instance", { id, removeFiles }),
   openInstanceDir: (id: string) => invoke("open_instance_dir", { id }),
+
+  // ---- PCL CE 风格：游戏目录与版本隔离
+  scanGameFolders: () => invoke<GameFolder[]>("scan_game_folders"),
+  /** 当前 Minecraft 文件夹绝对路径（版本/库/资源都在这里） */
+  getMcFolder: () => invoke<string>("get_mc_folder"),
+  switchGameFolder: (path: string) => invoke<string>("switch_game_folder", { path }),
+  addCustomGameFolder: (name: string, path: string) =>
+    invoke<string[]>("add_custom_game_folder", { name, path }),
+  removeCustomGameFolder: (path: string) =>
+    invoke<string[]>("remove_custom_game_folder", { path }),
+  migrateInstancesToMcFolder: () => invoke<number>("migrate_instances_to_mc_folder"),
+  instancePaths: (id: string) => invoke<InstancePaths>("instance_paths", { id }),
   listScreenshots: (instanceId: string) =>
     invoke<string[]>("list_screenshots", { instanceId }),
+
+  // 实例资源：存档 / 资源包 / 光影 / 日志
+  instanceSize: (instanceId: string) => invoke<number>("instance_size", { instanceId }),
+  openGameSubdir: (instanceId: string, sub: string) =>
+    invoke("open_game_subdir", { instanceId, sub }),
+  listSaves: (instanceId: string) => invoke<SaveInfo[]>("list_saves", { instanceId }),
+  deleteSave: (instanceId: string, dirName: string) =>
+    invoke("delete_save", { instanceId, dirName }),
+  backupSave: (instanceId: string, dirName: string) =>
+    invoke<string>("backup_save", { instanceId, dirName }),
+  listResourcepacks: (instanceId: string) =>
+    invoke<PackInfo[]>("list_resourcepacks", { instanceId }),
+  toggleResourcepack: (instanceId: string, fileName: string, enabled: boolean) =>
+    invoke("toggle_resourcepack", { instanceId, fileName, enabled }),
+  deleteResourcepack: (instanceId: string, fileName: string) =>
+    invoke("delete_resourcepack", { instanceId, fileName }),
+  listShaderpacks: (instanceId: string) =>
+    invoke<PackInfo[]>("list_shaderpacks", { instanceId }),
+  setShaderpack: (instanceId: string, name: string) =>
+    invoke("set_shaderpack", { instanceId, name }),
+  deleteShaderpack: (instanceId: string, fileName: string) =>
+    invoke("delete_shaderpack", { instanceId, fileName }),
+  importPackFile: (instanceId: string, kind: "resourcepack" | "shaderpack", srcPath: string) =>
+    invoke<string>("import_pack_file", { instanceId, kind, srcPath }),
+  listGameLogs: (instanceId: string) => invoke<LogFile[]>("list_game_logs", { instanceId }),
+  readGameLog: (instanceId: string, name: string, tail = 400) =>
+    invoke<string>("read_game_log", { instanceId, name, tail }),
 
   // 模组
   listMods: (instanceId: string) => invoke<ModInfo[]>("list_mods", { instanceId }),
@@ -273,9 +388,9 @@ export const api = {
     filename: string,
     sha1: string | null
   ) => invoke<string>("modrinth_install", { instanceId, downloadUrl, filename, sha1 }),
-  /** 推荐位：projectType 为 mod / modpack，category 传 Modrinth 分类 slug */
+  /** 推荐位：projectType 为 mod / modpack / resourcepack / shader，category 传 Modrinth 分类 slug */
   modrinthRecommend: (
-    projectType: "mod" | "modpack",
+    projectType: "mod" | "modpack" | "resourcepack" | "shader" | "datapack",
     category: string | null,
     gameVersion: string | null,
     loader: string | null,
@@ -295,6 +410,21 @@ export const api = {
   /** 在线安装整合包：下载 .mrpack 并走完整导入流程 */
   modrinthInstallModpack: (slug: string, versionId: string | null = null) =>
     invoke<Instance>("modrinth_install_modpack", { slug, versionId }),
+  /** 在线安装资源包 / 光影包到实例对应目录 */
+  modrinthInstallResource: (
+    instanceId: string,
+    kind: "resourcepack" | "shader",
+    downloadUrl: string,
+    filename: string,
+    sha1: string | null
+  ) =>
+    invoke<string>("modrinth_install_resource", {
+      instanceId,
+      kind,
+      downloadUrl,
+      filename,
+      sha1,
+    }),
   cfSearch: (query: string, gameVersion: string | null, offset = 0) =>
     invoke<CfModHit[]>("cf_search", { query, gameVersion, offset }),
   cfFiles: (modId: number, gameVersion: string | null) =>

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
@@ -29,6 +29,62 @@ pub struct Instance {
     pub max_memory: Option<u32>,
     /// 游戏目录（绝对路径）
     pub game_dir: String,
+
+    // ---- 以下为「版本设置」（对齐 PCL 的版本独立设置），全部可缺省 ----
+    /// 最小内存 MB（-Xms），None = 不传
+    #[serde(default)]
+    pub min_memory: Option<u32>,
+    /// 指定 Java 路径，None/空 = 自动选择
+    #[serde(default)]
+    pub java_path: Option<String>,
+    /// 额外 JVM 参数（空格分隔），None = 回退全局设置
+    #[serde(default)]
+    pub jvm_args: Option<String>,
+    /// 额外游戏参数（空格分隔）
+    #[serde(default)]
+    pub game_args: Option<String>,
+    /// 窗口宽/高，None = 自动
+    #[serde(default)]
+    pub window_width: Option<u32>,
+    #[serde(default)]
+    pub window_height: Option<u32>,
+    /// 全屏启动
+    #[serde(default)]
+    pub fullscreen: bool,
+    /// 启动后自动加入服务器，形如 "mc.example.com" 或 "mc.example.com:25565"
+    #[serde(default)]
+    pub auto_join_server: Option<String>,
+    /// 上次启动时间（RFC3339），主页按此排序「最近游玩」
+    #[serde(default)]
+    pub last_played: Option<String>,
+
+    // ---- PCL CE 风格：.minecraft\versions\<文件夹名> 布局 ----
+    /// 实例在 `<.minecraft>\versions\` 下的文件夹名；None 表示旧版布局
+    /// （`%APPDATA%\com.caiwenjun.ccl\instances\<uuid>\game`）
+    #[serde(default)]
+    pub folder_name: Option<String>,
+    /// 版本隔离的实例级覆盖：None/-1 = 跟随全局策略，1 = 强制隔离，2 = 强制不隔离
+    #[serde(default)]
+    pub version_isolation: Option<i32>,
+}
+
+impl Instance {
+    /// 实例文件夹的绝对路径（新布局），旧布局为 None
+    pub fn folder_path(&self, app: &AppHandle) -> Option<PathBuf> {
+        self.folder_name
+            .as_deref()
+            .map(|n| crate::paths::instance_folder(app, n))
+    }
+
+    /// `--gameDir`：由版本隔离策略推导
+    pub fn game_dir_path(&self, app: &AppHandle) -> PathBuf {
+        crate::paths::resolve_game_dir(app, self)
+    }
+
+    /// versions / libraries / assets 所在的 MC 根
+    pub fn mc_root(&self, app: &AppHandle) -> PathBuf {
+        crate::paths::mc_root(app, self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +103,7 @@ pub struct ModInfo {
     pub mod_id: Option<String>,
 }
 
+/// 旧布局（v0.x）：%APPDATA%\com.caiwenjun.ccl\instances\<uuid>
 fn instance_dir(app: &AppHandle, id: &str) -> PathBuf {
     settings::instances_dir(app).join(id)
 }
@@ -55,19 +112,55 @@ fn instance_json(app: &AppHandle, id: &str) -> PathBuf {
     instance_dir(app, id).join("instance.json")
 }
 
-pub fn load_instances(app: &AppHandle) -> Vec<Instance> {
-    let mut out = vec![];
-    let root = settings::instances_dir(app);
-    if let Ok(entries) = fs::read_dir(&root) {
+/// 扫描一处目录下的 instance.json
+fn collect_instances(root: &Path, out: &mut Vec<Instance>, seen: &mut std::collections::HashSet<String>) {
+    if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {
             let json = entry.path().join("instance.json");
             if let Ok(text) = fs::read_to_string(&json) {
                 if let Ok(inst) = serde_json::from_str::<Instance>(&text) {
-                    out.push(inst);
+                    if seen.insert(inst.id.clone()) {
+                        out.push(inst);
+                    }
                 }
             }
         }
     }
+}
+
+/// 读取全部实例：新布局（.minecraft\versions\*\CCL）+ 旧布局（instances\<uuid>）
+pub fn load_instances(app: &AppHandle) -> Vec<Instance> {
+    let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
+
+    // 新布局：<.minecraft>\versions\<文件夹名>\CCL\instance.json
+    let versions = crate::paths::versions_root(app);
+    if let Ok(entries) = fs::read_dir(&versions) {
+        for entry in entries.flatten() {
+            let json = entry.path().join("CCL").join("instance.json");
+            if let Ok(text) = fs::read_to_string(&json) {
+                if let Ok(inst) = serde_json::from_str::<Instance>(&text) {
+                    if seen.insert(inst.id.clone()) {
+                        out.push(inst);
+                    }
+                }
+            }
+        }
+    }
+    // 旧布局：兼容升级前创建的实例
+    collect_instances(&settings::instances_dir(app), &mut out, &mut seen);
+
+    // 归一化：把 game_dir 刷新成「版本隔离」策略当前推导出的真实路径。
+    // 这样全局隔离设置改动后，所有按 inst.game_dir 读取游戏数据的代码无需感知隔离逻辑。
+    for inst in out.iter_mut() {
+        if inst.folder_name.is_some() {
+            let resolved = crate::paths::resolve_game_dir(app, inst);
+            if resolved.to_string_lossy() != inst.game_dir {
+                inst.game_dir = resolved.to_string_lossy().to_string();
+            }
+        }
+    }
+
     out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     out
 }
@@ -80,11 +173,27 @@ pub fn get_instance(app: &AppHandle, id: &str) -> Result<Instance, String> {
 }
 
 fn write_instance(app: &AppHandle, inst: &Instance) -> Result<(), String> {
-    let dir = instance_dir(app, &inst.id);
-    fs::create_dir_all(dir.join("game")).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(inst).map_err(|e| e.to_string())?;
-    fs::write(instance_json(app, &inst.id), text).map_err(|e| e.to_string())?;
+    match inst.folder_name.as_deref() {
+        // 新布局：<实例文件夹>\CCL\instance.json
+        Some(folder) => {
+            let dir = crate::paths::ccl_meta_dir(app, folder);
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            fs::write(dir.join("instance.json"), text).map_err(|e| e.to_string())?;
+        }
+        // 旧布局：<instances>\<uuid>\instance.json
+        None => {
+            let dir = instance_dir(app, &inst.id);
+            fs::create_dir_all(dir.join("game")).map_err(|e| e.to_string())?;
+            fs::write(instance_json(app, &inst.id), text).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
+}
+
+/// 供其他模块回写实例（如启动后记录 last_played）
+pub fn save_instance(app: &AppHandle, inst: &Instance) -> Result<(), String> {
+    write_instance(app, inst)
 }
 
 #[tauri::command]
@@ -126,7 +235,10 @@ pub fn add_instance(
         return Err("实例名不能为空".into());
     }
     let id = Uuid::new_v4().to_string();
-    let game_dir = instance_dir(&app, &id).join("game");
+    // PCL CE 布局：Minecraft 文件夹 + versions\<实例文件夹名>
+    let root = crate::paths::ensure_folder_layout(app);
+    let folder_name = crate::paths::unique_folder_name(app, &name);
+    let game_dir = crate::paths::instance_folder(app, &folder_name);
     fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
     for sub in ["mods", "config", "saves", "resourcepacks", "screenshots"] {
         fs::create_dir_all(game_dir.join(sub)).ok();
@@ -141,8 +253,20 @@ pub fn add_instance(
         created_at: chrono::Utc::now().to_rfc3339(),
         max_memory,
         game_dir: game_dir.to_string_lossy().to_string(),
+        min_memory: None,
+        java_path: None,
+        jvm_args: None,
+        game_args: None,
+        window_width: None,
+        window_height: None,
+        fullscreen: false,
+        auto_join_server: None,
+        last_played: None,
+        folder_name: Some(folder_name),
+        version_isolation: None,
     };
     write_instance(app, &inst)?;
+    let _ = root;
     Ok(inst)
 }
 
@@ -160,6 +284,12 @@ pub fn create_instance(
 
 /// 删除实例目录（下载失败时回滚刚建的实例用）
 pub fn remove_instance_dir(app: &AppHandle, id: &str) {
+    if let Ok(inst) = get_instance(app, id) {
+        if let Some(dir) = inst.folder_path(app) {
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+    }
     let dir = instance_dir(app, id);
     if dir.exists() {
         let _ = fs::remove_dir_all(&dir);
@@ -173,13 +303,56 @@ pub struct InstancePatch {
     pub installed_version_id: Option<String>,
     pub loader_version: Option<String>,
     pub loader: Option<String>,
+    /// 以下为版本设置项；字符串传空串表示清空（→ None）
+    pub min_memory: Option<u32>,
+    pub java_path: Option<String>,
+    pub jvm_args: Option<String>,
+    pub game_args: Option<String>,
+    pub window_width: Option<u32>,
+    pub window_height: Option<u32>,
+    pub fullscreen: Option<bool>,
+    pub auto_join_server: Option<String>,
+    /// 版本隔离覆盖：-1/None 跟随全局，1 强制隔离，2 强制不隔离（此处用 0 表示跟随全局）
+    pub version_isolation: Option<i32>,
+}
+
+/// 空串 / 纯空白 → None，用于「清空该项」语义
+fn blank_to_none(s: String) -> Option<String> {
+    let t = s.trim().to_string();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
 }
 
 #[tauri::command]
 pub fn update_instance(app: AppHandle, id: String, patch: InstancePatch) -> Result<Instance, String> {
     let mut inst = get_instance(&app, &id)?;
     if let Some(name) = patch.name.filter(|n| !n.trim().is_empty()) {
-        inst.name = name.trim().to_string();
+        let new_name = name.trim().to_string();
+        // PCL 行为：改名同步重命名实例文件夹；目标已存在则保留原文件夹名
+        if let Some(old_folder) = inst.folder_name.clone() {
+            let want = crate::paths::sanitize_folder_name(&new_name);
+            if want != old_folder {
+                let from = crate::paths::instance_folder(&app, &old_folder);
+                let to = crate::paths::instance_folder(&app, &want);
+                if from.exists() && !to.exists() {
+                    if fs::rename(&from, &to).is_ok() {
+                        inst.folder_name = Some(want);
+                        inst.game_dir = to.to_string_lossy().to_string();
+                    }
+                }
+            }
+        }
+        inst.name = new_name;
+    }
+    if let Some(v) = patch.version_isolation {
+        inst.version_isolation = match v {
+            1 => Some(1),
+            2 => Some(2),
+            _ => None,
+        };
     }
     if let Some(m) = patch.max_memory {
         inst.max_memory = Some(m);
@@ -193,17 +366,177 @@ pub fn update_instance(app: AppHandle, id: String, patch: InstancePatch) -> Resu
     if let Some(v) = patch.loader {
         inst.loader = v;
     }
+    // ---- 版本设置
+    if let Some(m) = patch.min_memory {
+        inst.min_memory = if m == 0 { None } else { Some(m) };
+    }
+    if let Some(v) = patch.java_path {
+        inst.java_path = blank_to_none(v);
+    }
+    if let Some(v) = patch.jvm_args {
+        inst.jvm_args = blank_to_none(v);
+    }
+    if let Some(v) = patch.game_args {
+        inst.game_args = blank_to_none(v);
+    }
+    if let Some(w) = patch.window_width {
+        inst.window_width = if w == 0 { None } else { Some(w) };
+    }
+    if let Some(h) = patch.window_height {
+        inst.window_height = if h == 0 { None } else { Some(h) };
+    }
+    if let Some(f) = patch.fullscreen {
+        inst.fullscreen = f;
+    }
+    if let Some(v) = patch.auto_join_server {
+        inst.auto_join_server = blank_to_none(v);
+    }
     write_instance(&app, &inst)?;
     Ok(inst)
 }
 
 #[tauri::command]
-pub fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
-    let dir = instance_dir(&app, &id);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|e| format!("删除实例失败: {e}"))?;
+pub fn delete_instance(app: AppHandle, id: String, remove_files: Option<bool>) -> Result<(), String> {
+    let inst = get_instance(&app, &id)?;
+    let full = remove_files.unwrap_or(true);
+    match inst.folder_path(&app) {
+        // 新布局：默认只删实例文件夹（游戏数据）；实例元数据也在这里，一起删掉
+        Some(dir) => {
+            if full && dir.exists() {
+                fs::remove_dir_all(&dir).map_err(|e| format!("删除实例失败: {e}"))?;
+            } else if !full {
+                // 只删启动器私有数据，保留存档与模组
+                let meta = crate::paths::ccl_meta_dir(&app, inst.folder_name.as_deref().unwrap_or(""));
+                if meta.exists() {
+                    fs::remove_dir_all(&meta).map_err(|e| format!("删除实例数据失败: {e}"))?;
+                }
+            }
+        }
+        None => {
+            let dir = instance_dir(&app, &id);
+            if full && dir.exists() {
+                fs::remove_dir_all(&dir).map_err(|e| format!("删除实例失败: {e}"))?;
+            }
+        }
     }
     Ok(())
+}
+
+/// 把旧版布局（instances\<uuid>\game）的实例迁进 .minecraft\versions\<文件夹名>
+///
+/// 同盘用 rename（瞬间完成），跨盘退化为复制。迁移后原目录会被删除。
+#[tauri::command]
+pub fn migrate_instances_to_mc_folder(app: AppHandle) -> Result<usize, String> {
+    let root = crate::paths::ensure_folder_layout(&app);
+    let legacy = settings::instances_dir(&app);
+    let mut moved = 0usize;
+
+    let entries: Vec<_> = fs::read_dir(&legacy)
+        .map(|rd| rd.flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for entry in entries {
+        let src_dir = entry.path();
+        let json = src_dir.join("instance.json");
+        let Ok(text) = fs::read_to_string(&json) else {
+            continue;
+        };
+        let Ok(mut inst) = serde_json::from_str::<Instance>(&text) else {
+            continue;
+        };
+        if inst.folder_name.is_some() {
+            continue; // 已经是新布局（理论上不会出现在旧目录里）
+        }
+
+        let folder_name = crate::paths::unique_folder_name(&app, &inst.name);
+        let dest = crate::paths::instance_folder(&app, &folder_name);
+        let src_game = src_dir.join("game");
+
+        // 目标存在同名则换个名字继续，避免覆盖已有数据
+        if dest.exists() {
+            continue;
+        }
+        fs::create_dir_all(&dest).map_err(|e| format!("创建实例文件夹失败: {e}"))?;
+
+        if src_game.exists() {
+            if let Err(e) = move_dir_contents(&src_game, &dest) {
+                let _ = fs::remove_dir_all(&dest);
+                return Err(format!("迁移「{}」失败: {e}", inst.name));
+            }
+        }
+
+        inst.folder_name = Some(folder_name);
+        inst.game_dir = dest.to_string_lossy().to_string();
+        write_instance(&app, &inst)?;
+
+        // 元数据写成功后才删旧目录（含旧 instance.json）
+        let _ = fs::remove_dir_all(&src_dir);
+        moved += 1;
+    }
+
+    let _ = root;
+    Ok(moved)
+}
+
+/// 把 src 下的内容整体搬到 dest，优先 rename（同盘是原子操作），跨盘则复制
+fn move_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() && to.exists() {
+            // 目标已有同名目录（不太可能），合并进去
+            move_dir_contents(&from, &to)?;
+            let _ = fs::remove_dir_all(&from);
+            continue;
+        }
+        if let Ok(_) = fs::rename(&from, &to) {
+            continue;
+        }
+        if from.is_dir() {
+            fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+            move_dir_contents(&from, &to)?;
+            let _ = fs::remove_dir_all(&from);
+        } else {
+            fs::copy(&from, &to).map_err(|e| format!("复制 {:?} 失败: {e}", entry.file_name()))?;
+            let _ = fs::remove_file(&from);
+        }
+    }
+    Ok(())
+}
+
+/// 查询某实例当前生效的游戏目录与隔离状态（给界面显示）
+#[tauri::command]
+pub fn instance_paths(
+    app: AppHandle,
+    id: String,
+) -> Result<InstancePaths, String> {
+    let inst = get_instance(&app, &id)?;
+    Ok(InstancePaths {
+        mc_root: crate::paths::mc_root(&app, &inst).to_string_lossy().to_string(),
+        game_dir: crate::paths::resolve_game_dir(&app, &inst)
+            .to_string_lossy()
+            .to_string(),
+        instance_folder: inst
+            .folder_path(&app)
+            .map(|p| p.to_string_lossy().to_string()),
+        isolation_label: crate::paths::isolation_label(&app, &inst),
+        isolated: crate::paths::isolation_enabled(&app, &inst),
+        legacy: inst.folder_name.is_none(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InstancePaths {
+    /// .minecraft 根（versions / libraries / assets 所在地）
+    pub mc_root: String,
+    /// 传给 --gameDir 的路径
+    pub game_dir: String,
+    /// 实例文件夹（新布局）
+    pub instance_folder: Option<String>,
+    pub isolation_label: String,
+    pub isolated: bool,
+    /// 是否为旧版布局（可迁移）
+    pub legacy: bool,
 }
 
 /// 列出实例截图（按修改时间新→旧，最多 24 张，仅返回文件名）
