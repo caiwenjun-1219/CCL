@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, Download, Trash2, Power, RefreshCw, FolderOpen, Loader2 } from "lucide-react";
+import { Search, Download, Trash2, Power, RefreshCw, FolderOpen, Loader2, Sparkles } from "lucide-react";
 import { useApp } from "../store/app";
 import { api, fmtSize, type ModHit, type CfModHit, type ModInfo } from "../lib/tauri";
+import { ModRecommend } from "../components/Recommend";
 
 export default function ModsPage() {
   const [params] = useSearchParams();
   const { instances, settings, showToast } = useApp();
   const [instanceId, setInstanceId] = useState(params.get("instance") || "");
+  const [view, setView] = useState<"recommend" | "search">(
+    params.get("view") === "search" ? "search" : "recommend"
+  );
   const [tab, setTab] = useState<"modrinth" | "curseforge">("modrinth");
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<(ModHit | CfModHit)[]>([]);
@@ -134,22 +138,48 @@ export default function ModsPage() {
             </option>
           ))}
         </select>
-        <div className="flex gap-1 bg-ccl-panel border border-ccl-border rounded-lg p-0.5">
+        {/* 推荐 / 搜索 */}
+        <div className="flex gap-0.5 bg-ccl-panel2 border border-ccl-gray6 rounded-[3px] p-0.5">
           <button
-            className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "modrinth" ? "bg-ccl-accent text-white" : "text-ccl-muted"}`}
-            onClick={() => setTab("modrinth")}
+            className={`flex items-center gap-1 px-3 h-[26px] rounded-[2px] text-[12px] font-semibold ${
+              view === "recommend" ? "bg-ccl-accent text-white" : "text-ccl-muted hover:text-ccl-accent"
+            }`}
+            onClick={() => setView("recommend")}
           >
-            Modrinth
+            <Sparkles size={11} /> 推荐
           </button>
           <button
-            className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "curseforge" ? "bg-ccl-accent text-white" : "text-ccl-muted"}`}
-            onClick={() => setTab("curseforge")}
+            className={`flex items-center gap-1 px-3 h-[26px] rounded-[2px] text-[12px] font-semibold ${
+              view === "search" ? "bg-ccl-accent text-white" : "text-ccl-muted hover:text-ccl-accent"
+            }`}
+            onClick={() => setView("search")}
           >
-            CurseForge
+            <Search size={11} /> 搜索
           </button>
         </div>
+
+        {view === "search" && (
+          <div className="flex gap-1 bg-ccl-panel border border-ccl-border rounded-lg p-0.5">
+            <button
+              className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "modrinth" ? "bg-ccl-accent text-white" : "text-ccl-muted"}`}
+              onClick={() => setTab("modrinth")}
+            >
+              Modrinth
+            </button>
+            <button
+              className={`px-3 py-1 rounded-md text-[12px] font-semibold ${tab === "curseforge" ? "bg-ccl-accent text-white" : "text-ccl-muted"}`}
+              onClick={() => setTab("curseforge")}
+            >
+              CurseForge
+            </button>
+          </div>
+        )}
       </div>
 
+      {view === "recommend" ? (
+        <ModRecommend instanceId={instanceId} />
+      ) : (
+        <>
       <div className="flex gap-2 mb-5">
         <input
           className="field"
@@ -282,6 +312,8 @@ export default function ModsPage() {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

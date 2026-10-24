@@ -72,8 +72,10 @@ fn main() {
             auth::refresh_account,
             // 模组市场
             modrinth::modrinth_search,
+            modrinth::modrinth_recommend,
             modrinth::modrinth_versions,
             modrinth::modrinth_install,
+            modrinth::modrinth_install_modpack,
             curseforge::cf_search,
             curseforge::cf_files,
             curseforge::cf_install,

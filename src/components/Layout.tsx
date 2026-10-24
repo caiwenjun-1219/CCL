@@ -145,7 +145,9 @@ function DownloadCenter() {
   const downloads = useApp((s) => s.downloads);
   const [open, setOpen] = useState(false);
   const list = Object.values(downloads).filter((d) => !d.finished);
-  const active = list.length > 0;
+  // 失败任务会一直留在列表里（方便查看原因），但不该计入"进行中"角标
+  const running = list.filter((d) => !d.error);
+  const active = running.length > 0;
 
   return (
     <>
@@ -153,13 +155,13 @@ function DownloadCenter() {
         className="pcl-float-btn relative"
         data-accent={active}
         onClick={() => setOpen((v) => !v)}
-        title={active ? `下载任务 ${list.length}` : "任务管理"}
+        title={active ? `下载任务 ${running.length}` : "任务管理"}
         style={(open ? {} : { display: "flex" }) as React.CSSProperties}
       >
         <Download size={17} />
         {active && (
           <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[#e34b4b] text-white text-[10px] font-bold flex items-center justify-center border border-white">
-            {list.length}
+            {running.length}
           </span>
         )}
       </button>

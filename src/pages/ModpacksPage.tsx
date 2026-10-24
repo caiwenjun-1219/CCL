@@ -3,6 +3,7 @@ import { Package, Upload, Download, Loader2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useApp } from "../store/app";
 import { api, onModpackProgress } from "../lib/tauri";
+import { PackRecommend } from "../components/Recommend";
 
 export default function ModpacksPage() {
   const { instances, showToast, loadInstances } = useApp();
@@ -49,6 +50,13 @@ export default function ModpacksPage() {
   return (
     <div>
       <h1 className="pcl-title mb-4">整合包</h1>
+
+      <PackRecommend onInstalled={loadInstances} />
+
+      <div className="flex items-center gap-2.5 mt-7 mb-3">
+        <span className="text-[12px] font-bold text-ccl-muted">本地整合包</span>
+        <span className="flex-1 h-px bg-ccl-gray6" />
+      </div>
 
       <div className="card mb-5">
         <div className="flex items-start gap-4">

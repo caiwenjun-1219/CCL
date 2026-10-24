@@ -96,6 +96,23 @@ export interface ModHit {
   author: string;
 }
 
+/** 推荐位项目卡片：比 ModHit 多带关注数 / 类型 / 更新时间 / 主题色 */
+export interface ProjectHit {
+  project_id: string;
+  project_type: string;
+  slug: string;
+  title: string;
+  description: string;
+  icon_url: string | null;
+  categories: string[];
+  versions: string[];
+  downloads: number;
+  follows: number;
+  author: string;
+  date_modified: string;
+  color: number | null;
+}
+
 export interface CfModHit {
   id: number;
   name: string;
@@ -252,6 +269,28 @@ export const api = {
     filename: string,
     sha1: string | null
   ) => invoke<string>("modrinth_install", { instanceId, downloadUrl, filename, sha1 }),
+  /** 推荐位：projectType 为 mod / modpack，category 传 Modrinth 分类 slug */
+  modrinthRecommend: (
+    projectType: "mod" | "modpack",
+    category: string | null,
+    gameVersion: string | null,
+    loader: string | null,
+    index: "downloads" | "follows" | "newest" | "updated" = "downloads",
+    offset = 0,
+    limit = 12
+  ) =>
+    invoke<ProjectHit[]>("modrinth_recommend", {
+      projectType,
+      category,
+      gameVersion,
+      loader,
+      index,
+      offset,
+      limit,
+    }),
+  /** 在线安装整合包：下载 .mrpack 并走完整导入流程 */
+  modrinthInstallModpack: (slug: string, versionId: string | null = null) =>
+    invoke<Instance>("modrinth_install_modpack", { slug, versionId }),
   cfSearch: (query: string, gameVersion: string | null, offset = 0) =>
     invoke<CfModHit[]>("cf_search", { query, gameVersion, offset }),
   cfFiles: (modId: number, gameVersion: string | null) =>
