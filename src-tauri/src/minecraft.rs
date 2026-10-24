@@ -529,15 +529,10 @@ fn library_allowed(lib: &Value) -> bool {
 
 // ---------------------------------------------------------------- 版本安装命令
 
-/// 安装原版游戏版本（从清单拉取）
-#[tauri::command]
-pub async fn mc_install_version(
-    app: AppHandle,
-    game_dir: String,
-    version_id: String,
-) -> Result<String, String> {
+/// 定位版本并拉取其 JSON（清单多源回退）
+async fn resolve_version_json(app: &AppHandle, version_id: &str) -> Result<Value, String> {
     let client = downloader::http_client();
-    let prefer = prefer_mirror(&app);
+    let prefer = prefer_mirror(app);
     let manifest_urls = downloader::urls_with_setting(
         "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
         prefer,
@@ -559,9 +554,61 @@ pub async fn mc_install_version(
         }
     }
     let version_url = version_url.ok_or(format!("定位版本失败: {last_err}"))?;
-    let vjson = fetch_version_json(&client, &version_url, prefer).await?;
+    fetch_version_json(&client, &version_url, prefer).await
+}
+
+/// 安装原版游戏版本（从清单拉取）到指定游戏目录
+#[tauri::command]
+pub async fn mc_install_version(
+    app: AppHandle,
+    game_dir: String,
+    version_id: String,
+) -> Result<String, String> {
+    let vjson = resolve_version_json(&app, &version_id).await?;
     install_version(&app, Path::new(&game_dir), &version_id, &vjson, true).await?;
     Ok(version_id)
+}
+
+/// 下载游戏本体并为它自动创建一个独立实例（PCL/HMCL 「下载即一个版本」的行为）。
+/// 实例名默认与版本号同名，重名自动追加序号；安装失败会回滚删除刚建的实例目录。
+#[tauri::command]
+pub async fn mc_download_as_instance(
+    app: AppHandle,
+    version_id: String,
+    name: Option<String>,
+    max_memory: Option<u32>,
+) -> Result<crate::instances::Instance, String> {
+    // 先拿到版本 JSON：网络/清单失败时不留任何空实例
+    let vjson = resolve_version_json(&app, &version_id).await?;
+
+    let inst_name = match name.filter(|n| !n.trim().is_empty()) {
+        Some(n) => n,
+        None => crate::instances::unique_name(&app, &version_id),
+    };
+    let inst = crate::instances::add_instance(
+        &app,
+        &inst_name,
+        &version_id,
+        "vanilla",
+        None,
+        max_memory,
+    )?;
+
+    match install_version(&app, Path::new(&inst.game_dir), &version_id, &vjson, true).await {
+        Ok(()) => crate::instances::update_instance(
+            app.clone(),
+            inst.id.clone(),
+            crate::instances::InstancePatch {
+                installed_version_id: Some(version_id.clone()),
+                loader: Some("vanilla".into()),
+                ..Default::default()
+            },
+        ),
+        Err(e) => {
+            crate::instances::remove_instance_dir(&app, &inst.id);
+            Err(format!("下载失败，已回滚新建的实例：{e}"))
+        }
+    }
 }
 
 /// 递归统计目录体积

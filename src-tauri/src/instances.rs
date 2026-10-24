@@ -85,12 +85,32 @@ pub fn list_instances(app: AppHandle) -> Vec<Instance> {
     load_instances(&app)
 }
 
-#[tauri::command]
-pub fn create_instance(
-    app: AppHandle,
-    name: String,
-    minecraft_version: String,
-    loader: String,
+/// 生成一个不与现有实例重名的名字：1.21.11 → 1.21.11 (2) → 1.21.11 (3)…
+pub fn unique_name(app: &AppHandle, base: &str) -> String {
+    let base = base.trim();
+    let base = if base.is_empty() { "新实例" } else { base };
+    let taken: Vec<String> = load_instances(app)
+        .into_iter()
+        .map(|i| i.name.to_lowercase())
+        .collect();
+    if !taken.iter().any(|n| n == &base.to_lowercase()) {
+        return base.to_string();
+    }
+    for n in 2..999 {
+        let cand = format!("{base} ({n})");
+        if !taken.iter().any(|t| t == &cand.to_lowercase()) {
+            return cand;
+        }
+    }
+    format!("{base} ({})", Uuid::new_v4())
+}
+
+/// 创建实例（非命令内部实现）：建目录 + 写 instance.json
+pub fn add_instance(
+    app: &AppHandle,
+    name: &str,
+    minecraft_version: &str,
+    loader: &str,
     loader_version: Option<String>,
     max_memory: Option<u32>,
 ) -> Result<Instance, String> {
@@ -107,16 +127,36 @@ pub fn create_instance(
     let inst = Instance {
         id,
         name,
-        minecraft_version,
-        loader,
+        minecraft_version: minecraft_version.to_string(),
+        loader: loader.to_string(),
         loader_version,
         installed_version_id: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         max_memory,
         game_dir: game_dir.to_string_lossy().to_string(),
     };
-    write_instance(&app, &inst)?;
+    write_instance(app, &inst)?;
     Ok(inst)
+}
+
+#[tauri::command]
+pub fn create_instance(
+    app: AppHandle,
+    name: String,
+    minecraft_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    max_memory: Option<u32>,
+) -> Result<Instance, String> {
+    add_instance(&app, &name, &minecraft_version, &loader, loader_version, max_memory)
+}
+
+/// 删除实例目录（下载失败时回滚刚建的实例用）
+pub fn remove_instance_dir(app: &AppHandle, id: &str) {
+    let dir = instance_dir(app, id);
+    if dir.exists() {
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -125,6 +165,7 @@ pub struct InstancePatch {
     pub max_memory: Option<u32>,
     pub installed_version_id: Option<String>,
     pub loader_version: Option<String>,
+    pub loader: Option<String>,
 }
 
 #[tauri::command]
@@ -141,6 +182,9 @@ pub fn update_instance(app: AppHandle, id: String, patch: InstancePatch) -> Resu
     }
     if let Some(v) = patch.loader_version {
         inst.loader_version = Some(v);
+    }
+    if let Some(v) = patch.loader {
+        inst.loader = v;
     }
     write_instance(&app, &inst)?;
     Ok(inst)

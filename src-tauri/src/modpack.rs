@@ -309,6 +309,7 @@ async fn install_loader_for_instance(
             max_memory: None,
             installed_version_id: Some(installed_id),
             loader_version: version.map(|v| v.to_string()),
+            loader: Some(kind.to_string()),
         },
     )?;
     Ok(())

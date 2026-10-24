@@ -153,6 +153,13 @@ export const api = {
     invoke<string[]>("mc_local_versions", { gameDir }),
   installVersion: (gameDir: string, versionId: string) =>
     invoke<string>("mc_install_version", { gameDir, versionId }),
+  /// 下载本体并自动创建同名实例（失败自动回滚实例目录）
+  downloadAsInstance: (versionId: string, name?: string | null, maxMemory?: number | null) =>
+    invoke<Instance>("mc_download_as_instance", {
+      versionId,
+      name: name ?? null,
+      maxMemory: maxMemory ?? null,
+    }),
   deleteVersion: (gameDir: string, versionId: string) =>
     invoke("mc_delete_version", { gameDir, versionId }),
   loaderVersions: (kind: string, mcVersion: string) =>
@@ -182,7 +189,13 @@ export const api = {
     }),
   updateInstance: (
     id: string,
-    patch: { name?: string; max_memory?: number; installed_version_id?: string; loader_version?: string }
+    patch: {
+      name?: string;
+      max_memory?: number;
+      installed_version_id?: string;
+      loader_version?: string;
+      loader?: string;
+    }
   ) => invoke<Instance>("update_instance", { id, patch }),
   deleteInstance: (id: string) => invoke("delete_instance", { id }),
   openInstanceDir: (id: string) => invoke("open_instance_dir", { id }),
