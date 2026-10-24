@@ -227,7 +227,7 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                   key={l.id}
                   className={`text-left px-3.5 py-2.5 rounded-lg border transition-colors ${
                     loader === l.id
-                      ? "border-ccl-accent bg-[#e4f3e4]"
+                      ? "border-ccl-accent bg-ccl-brush8"
                       : "border-ccl-border hover:border-ccl-accent/50"
                   }`}
                   onClick={() => setLoader(l.id)}

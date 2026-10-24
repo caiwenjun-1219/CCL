@@ -41,6 +41,7 @@ fn main() {
             minecraft::mc_local_versions,
             minecraft::mc_delete_version,
             minecraft::mc_install_version,
+            minecraft::mc_download_as_instance,
             minecraft::mc_test_version,
             minecraft::loader_versions,
             minecraft::mc_install_loader,
