@@ -35,7 +35,7 @@ export default function InstancesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-5">
-        <h1 className="text-lg font-bold">实例管理</h1>
+        <h1 className="pcl-title">实例管理</h1>
         <button className="btn btn-primary" onClick={() => setCreating(true)}>
           <Plus size={13} /> 新建实例
         </button>
@@ -81,7 +81,7 @@ export default function InstancesPage() {
                     <button
                       className="btn btn-ghost !py-1 !px-2.5"
                       title="模组管理"
-                      onClick={() => navigate(`/mods?instance=${inst.id}`)}
+                      onClick={() => navigate(`/download/mod?instance=${inst.id}`)}
                     >
                       <Puzzle size={13} />
                     </button>

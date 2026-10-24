@@ -287,7 +287,7 @@ export default function VersionsPage() {
     <div className="h-full flex flex-col min-h-0">
       {/* 顶部工具栏 */}
       <div className="flex flex-wrap items-center gap-2 mb-3 shrink-0">
-        <h1 className="text-lg font-bold mr-1">下载</h1>
+        <h1 className="pcl-title mr-1">下载</h1>
         <select
           className="field !w-44"
           value={instanceId}

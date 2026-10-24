@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Play, Square, FolderOpen, Terminal, Package, Plus, Loader2 } from "lucide-react";
+import { Play, Square, FolderOpen, Terminal, Package, Plus, Loader2, Bell, X, ChevronRight } from "lucide-react";
 import { useApp } from "../store/app";
 import { api, cclUrl } from "../lib/tauri";
 
@@ -12,14 +12,28 @@ const LOADER_LABEL: Record<string, string> = {
   neoforge: "NeoForge",
 };
 
+/** PCL 启动页右栏：实例列表（行式，PCL MyListItem 风格） */
 export default function HomePage() {
   const navigate = useNavigate();
-  const { instances, accounts, running, setRunning, appendLog, showToast, loadAccounts } = useApp();
+  const {
+    instances,
+    accounts,
+    update,
+    running,
+    currentInstanceId,
+    setCurrentInstance,
+    setRunning,
+    showToast,
+    loadAccounts,
+  } = useApp();
   const [launching, setLaunching] = useState<string | null>(null);
   const [logFor, setLogFor] = useState<string | null>(null);
   const logs = useApp((s) => s.logs);
-  // 各实例最新截图（经 ccl:// 协议直接加载本地图片）
   const [shots, setShots] = useState<Record<string, string[]>>({});
+  const [annDismissed, setAnnDismissed] = useState(() => {
+    const seen = localStorage.getItem("ccl-announcement-seen");
+    return !!update && seen === `${update.announcement}|${update.updated_at}`;
+  });
 
   useEffect(() => {
     let alive = true;
@@ -47,7 +61,6 @@ export default function HomePage() {
     try {
       const info = await api.launchInstance(id, null);
       setRunning(id, true);
-      // 启动可能自动创建了离线账户，刷新列表保证账户页/提示卡同步
       if (accounts.length === 0) loadAccounts();
       showToast(`已启动 ${info.version_id}（Java ${info.java_major}）`);
     } catch (e) {
@@ -66,21 +79,27 @@ export default function HomePage() {
     }
   };
 
+  const showAnn = !!update?.announcement && !annDismissed;
+
+  /* ------------------------------------------------------------- 空态 */
   if (instances.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center text-center">
-        <div className="w-16 h-16 rounded-2xl bg-ccl-accent flex items-center justify-center text-lg font-extrabold text-white mb-5">
-          CCL
+      <div className="h-full flex flex-col items-center justify-center text-center select-none">
+        <div
+          className="w-[72px] h-[72px] rounded-[4px] flex items-center justify-center text-[26px] font-black text-white mb-5"
+          style={{ background: "linear-gradient(135deg,#4890f5,#1370f3)", boxShadow: "0 8px 22px rgba(19,112,243,.3)" }}
+        >
+          C
         </div>
-        <h2 className="text-lg font-bold mb-2">欢迎使用 Cwj Craft Launcher</h2>
-        <p className="text-[13px] text-ccl-muted mb-6">
-          还没有游戏实例。创建一个实例，或导入一个整合包开始游戏。
+        <h2 className="text-[16px] font-bold mb-1.5">还没有游戏实例</h2>
+        <p className="text-[12.5px] text-ccl-gray3 mb-6 leading-relaxed">
+          下载一个游戏版本，或导入一个整合包开始游戏。
         </p>
-        <div className="flex gap-3">
-          <button className="btn btn-primary" onClick={() => navigate("/instances")}>
-            <Plus size={14} /> 创建实例
+        <div className="flex gap-2.5">
+          <button className="btn btn-primary !h-[34px] !px-5" onClick={() => navigate("/download/game")}>
+            <Plus size={14} /> 下载游戏
           </button>
-          <button className="btn btn-ghost" onClick={() => navigate("/modpacks")}>
+          <button className="btn !h-[34px] !px-5" onClick={() => navigate("/download/pack")}>
             <Package size={14} /> 导入整合包
           </button>
         </div>
@@ -89,145 +108,177 @@ export default function HomePage() {
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-base font-bold">游戏实例</h1>
-        <div className="flex gap-2">
-          <button className="btn btn-ghost" onClick={() => navigate("/modpacks")}>
-            <Package size={13} /> 导入整合包
+    <div className="max-w-[920px]">
+      {/* 云控公告（PCL 的浅蓝提示条） */}
+      {showAnn && update && (
+        <div className="flex items-start gap-2 bg-ccl-brush8 border border-ccl-brush6 rounded-[3px] px-3 py-2 mb-4 text-[12.5px] text-ccl-brush2">
+          <Bell size={14} className="mt-0.5 shrink-0" />
+          <div className="flex-1 whitespace-pre-wrap leading-relaxed">{update.announcement}</div>
+          <button
+            className="text-ccl-gray3 hover:text-ccl-gray1 shrink-0"
+            onClick={() => {
+              localStorage.setItem("ccl-announcement-seen", `${update.announcement}|${update.updated_at}`);
+              setAnnDismissed(true);
+            }}
+          >
+            <X size={14} />
           </button>
-          <button className="btn btn-primary" onClick={() => navigate("/instances")}>
-            <Plus size={13} /> 新建实例
+        </div>
+      )}
+
+      {/* 标题行 */}
+      <div className="flex items-end justify-between mb-3">
+        <div>
+          <h1 className="pcl-title">游戏实例</h1>
+          <p className="pcl-subtitle">点击任意实例可设为当前启动版本</p>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn !h-[28px] !text-[12px]" onClick={() => navigate("/download/pack")}>
+            <Package size={12} /> 整合包
+          </button>
+          <button className="btn btn-primary !h-[28px] !text-[12px]" onClick={() => navigate("/download/game")}>
+            <Plus size={12} /> 新建实例
           </button>
         </div>
       </div>
 
-      {/* PCL 式版本卡片列表：白底圆角行 + 大绿色启动按钮 */}
-      <div className="flex flex-col gap-2.5">
-        {instances.map((inst) => {
+      {/* 实例列表 */}
+      <div className="border border-ccl-gray6 rounded-[3px] overflow-hidden bg-white">
+        {instances.map((inst, i) => {
           const isRunning = running[inst.id];
+          const active = inst.id === currentInstanceId;
           const versionLabel =
             inst.loader === "vanilla"
               ? inst.minecraft_version
-              : `${inst.minecraft_version} · ${LOADER_LABEL[inst.loader] || inst.loader}`;
+              : `${LOADER_LABEL[inst.loader] || inst.loader} ${inst.loader_version || ""}`.trim();
+          const shot = (shots[inst.id] || [])[0];
           return (
             <div
               key={inst.id}
-              className="card hover:border-ccl-accent/50 transition-colors flex items-center gap-4 !py-3.5"
+              className="flex items-center gap-3 px-3 h-[62px] cursor-pointer transition-colors group"
+              style={{
+                borderTop: i === 0 ? "none" : "1px solid var(--color-ccl-gray6)",
+                background: active ? "var(--color-ccl-brush8)" : undefined,
+              }}
+              onMouseEnter={(e) => {
+                if (!active) e.currentTarget.style.background = "#f7fafe";
+              }}
+              onMouseLeave={(e) => {
+                if (!active) e.currentTarget.style.background = "";
+              }}
+              onClick={() => setCurrentInstance(inst.id)}
             >
-              <div className="w-11 h-11 rounded-lg bg-ccl-accent/10 border border-ccl-accent/25 flex items-center justify-center text-[13px] font-bold text-ccl-accent shrink-0">
-                {inst.name.slice(0, 2).toUpperCase()}
-              </div>
+              {/* 图标 / 截图缩略图 */}
+              {shot ? (
+                <img
+                  src={cclUrl(`instances/${inst.id}/screenshots/${encodeURIComponent(shot)}`)}
+                  alt=""
+                  className="w-[38px] h-[38px] rounded-[2px] object-cover shrink-0 border border-ccl-gray6"
+                  loading="lazy"
+                />
+              ) : (
+                <span
+                  className="w-[38px] h-[38px] rounded-[2px] flex items-center justify-center text-[14px] font-bold text-white shrink-0"
+                  style={{ background: active ? "#1370f3" : "linear-gradient(135deg,#7eaef8,#4890f5)" }}
+                >
+                  {inst.name.slice(0, 1).toUpperCase()}
+                </span>
+              )}
+
               <div className="min-w-0 flex-1">
-                <div className="font-bold text-[14px] truncate flex items-center gap-2">
-                  {inst.name}
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-[13.5px] truncate ${active ? "text-ccl-accent font-bold" : "font-semibold"}`}
+                  >
+                    {inst.name}
+                  </span>
                   {isRunning && <span className="tag tag-green">运行中</span>}
-                </div>
-                <div className="text-[12px] text-ccl-muted mt-0.5 truncate">
-                  {versionLabel}
-                  {inst.loader_version ? ` ${inst.loader_version}` : ""}
-                  {" · "}
-                  {inst.max_memory || 4096} MB
                   {inst.loader !== "vanilla" && !inst.installed_version_id && (
-                    <span className="text-ccl-warn ml-1.5">· 版本未安装</span>
+                    <span className="tag tag-orange">未安装</span>
                   )}
                 </div>
-                {(shots[inst.id] || []).length > 0 && (
-                  <div className="flex gap-1.5 mt-1.5">
-                    {(shots[inst.id] || []).slice(0, 4).map((name) => (
-                      <img
-                        key={name}
-                        src={cclUrl(
-                          `instances/${inst.id}/screenshots/${encodeURIComponent(name)}`
-                        )}
-                        alt=""
-                        loading="lazy"
-                        title={name}
-                        className="w-9 h-9 rounded object-cover bg-ccl-panel2 border border-ccl-border"
-                      />
-                    ))}
-                  </div>
-                )}
+                <div className="text-[11.5px] text-ccl-gray3 truncate mt-0.5">
+                  {versionLabel} · {inst.max_memory || 4096} MB
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                 {isRunning ? (
                   <>
-                    <button className="btn btn-danger" onClick={() => stop(inst.id)}>
-                      <Square size={13} /> 停止
+                    <button className="btn btn-danger !h-[26px] !text-[12px] !px-2.5" onClick={() => stop(inst.id)}>
+                      <Square size={11} /> 停止
                     </button>
-                    <button
-                      className="btn btn-ghost !px-2.5"
-                      onClick={() => setLogFor(inst.id)}
-                      title="查看日志"
-                    >
-                      <Terminal size={13} />
+                    <button className="btn !h-[26px] !px-2" onClick={() => setLogFor(inst.id)} title="查看日志">
+                      <Terminal size={12} />
                     </button>
                   </>
                 ) : (
                   <>
                     <button
-                      className="btn btn-primary !px-5 !py-2"
-                      disabled={
-                        launching === inst.id ||
-                        (inst.loader !== "vanilla" && !inst.installed_version_id)
-                      }
+                      className="btn btn-primary !h-[26px] !text-[12px] !px-3"
+                      disabled={launching === inst.id || (inst.loader !== "vanilla" && !inst.installed_version_id)}
                       onClick={() => play(inst.id)}
                     >
                       {launching === inst.id ? (
-                        <Loader2 size={14} className="animate-spin" />
+                        <Loader2 size={12} className="animate-spin" />
                       ) : (
-                        <Play size={14} />
+                        <Play size={11} />
                       )}
                       启动
                     </button>
                     <button
-                      className="btn btn-ghost !px-2.5"
-                      onClick={() => navigate(`/versions?instance=${inst.id}`)}
+                      className="btn !h-[26px] !px-2"
+                      onClick={() => navigate(`/download/game?instance=${inst.id}`)}
                       title="管理版本"
                     >
-                      <FolderOpen size={13} />
+                      <FolderOpen size={12} />
                     </button>
                     <button
-                      className="btn btn-ghost !px-2.5"
-                      onClick={() => navigate(`/mods?instance=${inst.id}`)}
+                      className="btn !h-[26px] !px-2"
+                      onClick={() => navigate(`/download/mod?instance=${inst.id}`)}
                       title="管理模组"
                     >
-                      <Package size={13} />
+                      <Package size={12} />
                     </button>
                   </>
                 )}
+                <ChevronRight size={14} className="text-ccl-gray4 opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
             </div>
           );
         })}
       </div>
 
-      {/* 日志抽屉 */}
-      {logFor && (
-        <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={() => setLogFor(null)}>
-          <div
-            className="bg-ccl-panel border-t border-ccl-border w-full h-[45vh] flex flex-col rounded-t-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-4 h-11 border-b border-ccl-border">
-              <span className="text-[13px] font-bold">
-                运行日志 · {instances.find((i) => i.id === logFor)?.name}
-              </span>
-              <button className="btn btn-ghost !py-1 !px-3" onClick={() => setLogFor(null)}>
-                关闭
-              </button>
-            </div>
-            <pre className="flex-1 overflow-auto p-4 text-[11px] font-mono text-[#5a6270] whitespace-pre-wrap">
-              {(logs[logFor] || []).join("\n") || "暂无日志输出"}
-            </pre>
-          </div>
+      {accounts.length === 0 && (
+        <div className="mt-4 flex items-center gap-2 border border-[#f0dcb4] bg-[#fdf8ea] rounded-[3px] px-3 py-2 text-[12px] text-[#8a6420]">
+          尚未添加游戏账户，启动前请先到「更多 → 游戏账户」登录。
+          <button className="text-ccl-accent hover:underline ml-auto shrink-0" onClick={() => navigate("/more/account")}>
+            去登录
+          </button>
         </div>
       )}
 
-      {accounts.length === 0 && (
-        <div className="mt-5 card border-[#e3c890] bg-[#fdf6e6] text-[12px] text-[#8a6420]">
-          尚未添加任何游戏账户。启动游戏前请先到「账户」页添加（支持微软正版登录与离线模式）。
+      {/* 日志弹窗（PCL 风格模态） */}
+      {logFor && (
+        <div className="pcl-modal-mask" onClick={() => setLogFor(null)}>
+          <div className="pcl-modal w-[720px] max-w-[86vw]" onClick={(e) => e.stopPropagation()}>
+            <div className="pcl-modal-head">
+              <span>运行日志 · {instances.find((i) => i.id === logFor)?.name}</span>
+              <button className="text-ccl-gray3 hover:text-ccl-gray1" onClick={() => setLogFor(null)}>
+                <X size={15} />
+              </button>
+            </div>
+            <div className="pcl-modal-body !p-0">
+              <pre className="h-[46vh] overflow-auto p-3 text-[11.5px] font-mono text-ccl-gray1 whitespace-pre-wrap bg-[#fbfbfc]">
+                {(logs[logFor] || []).join("\n") || "暂无日志输出"}
+              </pre>
+            </div>
+            <div className="pcl-modal-foot">
+              <button className="btn" onClick={() => setLogFor(null)}>
+                关闭
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

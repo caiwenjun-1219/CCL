@@ -1,18 +1,47 @@
 @import "tailwindcss";
 
-/* PCL（Plain Craft Launcher）风格浅色主题 */
+/* ============================================================================
+   PCL（Plain Craft Launcher 2）风格设计系统
+   色值与控件几何直接取自 PCL 源码：
+     Application.xaml  → ColorBrush1~8 / ColorBrushGray1~8
+     FormMain.xaml     → 窗口 6px 圆角、标题栏 48px、页签胶囊 27px
+     MyButton.xaml     → 按钮 3px 圆角、1px 描边、半透明白底
+     MyIconTextButton  → 胶囊按钮 13.5px 圆角
+   ========================================================================== */
 @theme {
-  --color-ccl-bg: #edf0f4;
+  /* PCL ColorBrush 色阶（默认蓝色主题） */
+  --color-ccl-brush1: #343d4a; /* 主文字 */
+  --color-ccl-brush2: #0b5bcb;
+  --color-ccl-brush3: #1370f3; /* 主强调 */
+  --color-ccl-brush4: #4890f5;
+  --color-ccl-brush5: #96c0f9;
+  --color-ccl-brush6: #d5e6fd;
+  --color-ccl-brush7: #e0eafd;
+  --color-ccl-brush8: #eaf2fe;
+
+  /* PCL 灰阶 */
+  --color-ccl-gray1: #404040;
+  --color-ccl-gray2: #737373;
+  --color-ccl-gray3: #8c8c8c;
+  --color-ccl-gray4: #a6a6a6;
+  --color-ccl-gray5: #cccccc;
+  --color-ccl-gray6: #ebebeb;
+  --color-ccl-gray7: #f0f0f0;
+  --color-ccl-gray8: #f5f5f5;
+
+  /* 语义别名（沿用旧名，保证既有页面自动换肤） */
+  --color-ccl-bg: #ffffff;
   --color-ccl-panel: #ffffff;
-  --color-ccl-panel2: #f5f7fa;
-  --color-ccl-border: #dde3ea;
-  --color-ccl-accent: #4e9e4e;
-  --color-ccl-accent2: #63b56a;
-  --color-ccl-text: #2b2f36;
-  --color-ccl-muted: #8a919e;
-  --color-ccl-danger: #c25b5b;
-  --color-ccl-warn: #b9862f;
-  --font-sans: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --color-ccl-panel2: #f5f5f5;
+  --color-ccl-border: #ebebeb;
+  --color-ccl-accent: #1370f3;
+  --color-ccl-accent2: #4890f5;
+  --color-ccl-text: #343d4a;
+  --color-ccl-muted: #8c8c8c;
+  --color-ccl-danger: #e34b4b;
+  --color-ccl-warn: #c1852b;
+
+  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   --font-mono: Consolas, "Cascadia Code", "Courier New", monospace;
 }
 
@@ -21,29 +50,17 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  background: transparent;
 }
 
 body {
-  background: var(--color-ccl-bg);
   color: var(--color-ccl-text);
   font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
   overflow: hidden;
   user-select: none;
-}
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-thumb {
-  background: #c8cfd8;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #b3bcc8;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
+  -webkit-font-smoothing: antialiased;
 }
 
 input,
@@ -52,91 +69,601 @@ select {
   user-select: text;
 }
 
-/* ---- PCL 风格按钮：绿色主按钮、白底描边次按钮 ---- */
+/* ---------------------------------------------------------------- 滚动条
+   PCL 自绘的细滚动条：3~8px，滑块深灰，无轨道 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cfcfcf;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b3b3b3;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- 窗口外壳
+   外层 10px 透明边距（PCL：Grid Margin=10），内层 6px 圆角 + 柔和投影 */
+.pcl-window {
+  height: 100%;
+  padding: 8px;
+  display: flex;
+  background: transparent;
+}
+/* 最大化 / 全屏时铺满，不留透明边 */
+.pcl-window[data-max="true"] {
+  padding: 0;
+}
+.pcl-window[data-max="true"] .pcl-frame {
+  border-radius: 0;
+  box-shadow: none;
+}
+.pcl-frame {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.07),
+    0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+/* ---------------------------------------------------------------- 标题栏
+   PCL：48px 高、主题色横向渐变、白色矢量 Logo、居中胶囊页签、右侧圆形按钮 */
+.pcl-titlebar {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  position: relative;
+  background:
+    linear-gradient(105deg, #4b93f6 0%, #2b7ef4 46%, #1370f3 100%);
+  color: #fff;
+}
+/* 顶部一层极淡高光，模拟 PCL 标题栏的立体感 */
+.pcl-titlebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 55%);
+  pointer-events: none;
+}
+
+/* 顶部页签：27px 高胶囊，选中态白底 + 主题色文字 */
+.pcl-tab {
+  height: 27px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  margin: 0 2px;
+  border-radius: 13.5px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    background 0.14s,
+    color 0.14s,
+    transform 0.14s;
+  white-space: nowrap;
+}
+.pcl-tab:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.pcl-tab:active {
+  transform: scale(0.96);
+}
+.pcl-tab[data-active="true"] {
+  background: #ffffff;
+  color: var(--color-ccl-accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+}
+.pcl-tab[data-active="true"]:hover {
+  background: #ffffff;
+}
+
+/* 标题栏圆形窗口按钮（PCL：28x28，hover 时白色半透明圆） */
+.pcl-winbtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.14s;
+}
+.pcl-winbtn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.pcl-winbtn:active {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+/* ---------------------------------------------------------------- 左侧栏
+   PCL：底色半透明白 #F1FFFFFF，右侧 4px 渐隐投影 */
+.pcl-sidebar {
+  flex-shrink: 0;
+  background: #f4f7fb;
+  border-right: 1px solid #e7ebf1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 侧栏边阴影（PCL RectLeftShadow：4px 渐变 4% 黑） */
+.pcl-sidebar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.045), transparent);
+  pointer-events: none;
+}
+
+/* 侧栏导航行（PCL MyListItem：36px 高，选中 #e0eafd + 主题色文字） */
+.pcl-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  color: var(--color-ccl-gray1);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.pcl-nav-item:hover {
+  background: rgba(19, 112, 243, 0.07);
+}
+.pcl-nav-item[data-active="true"] {
+  background: var(--color-ccl-brush7);
+  color: var(--color-ccl-accent);
+  font-weight: 600;
+}
+/* 选中态左侧 3px 主题色指示条 */
+.pcl-nav-item[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--color-ccl-accent);
+}
+
+/* ---------------------------------------------------------------- 按钮
+   PCL MyButton：3px 圆角，1px 描边，半透明白底，文字色 = 边框色
+   Highlight 态（主按钮）：主题色实心 + 白字 */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-radius: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 3px;
   font-size: 13px;
-  font-weight: 600;
-  padding: 7px 14px;
+  font-family: inherit;
   cursor: pointer;
-  border: 1px solid transparent;
-  transition: all 0.15s;
+  background: rgba(255, 255, 255, 0.34);
+  border: 1px solid var(--color-ccl-gray1);
+  color: var(--color-ccl-gray1);
+  transition:
+    background 0.14s,
+    border-color 0.14s,
+    color 0.14s,
+    transform 0.1s;
   white-space: nowrap;
 }
+.btn:hover {
+  border-color: var(--color-ccl-accent);
+  color: var(--color-ccl-accent);
+  background: var(--color-ccl-brush8);
+}
+.btn:active {
+  transform: scale(0.97);
+}
+/* 主按钮：主题色实心 */
 .btn-primary {
   background: var(--color-ccl-accent);
+  border-color: var(--color-ccl-accent);
   color: #fff;
+  box-shadow: 0 1px 3px rgba(19, 112, 243, 0.28);
 }
 .btn-primary:hover {
-  background: var(--color-ccl-accent2);
+  background: var(--color-ccl-brush4);
+  border-color: var(--color-ccl-brush4);
+  color: #fff;
+}
+/* 强调描边按钮（PCL ColorType=Highlight 的非实心变体） */
+.btn-highlight {
+  border-color: var(--color-ccl-accent);
+  color: var(--color-ccl-accent);
+  background: var(--color-ccl-brush8);
+}
+.btn-highlight:hover {
+  background: var(--color-ccl-brush6);
 }
 .btn-ghost {
-  background: #ffffff;
-  border-color: var(--color-ccl-border);
-  color: #5a6270;
+  background: transparent;
+  border-color: var(--color-ccl-gray5);
+  color: var(--color-ccl-gray2);
 }
 .btn-ghost:hover {
   border-color: var(--color-ccl-accent);
   color: var(--color-ccl-accent);
+  background: var(--color-ccl-brush8);
 }
 .btn-danger {
-  background: #ffffff;
-  border-color: #e3c4c4;
-  color: var(--color-ccl-danger);
+  background: transparent;
+  border-color: #e8b6b6;
+  color: #ce2111;
 }
 .btn-danger:hover {
-  background: #fdf3f3;
-  border-color: var(--color-ccl-danger);
+  background: #fdf2f2;
+  border-color: #ff4c4c;
+  color: #ce2111;
 }
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: not-allowed;
+  transform: none;
 }
 
+/* PCL 主启动按钮：54px 高，主题色实心，字号 15 */
+.pcl-launch-btn {
+  width: 100%;
+  height: 54px;
+  border-radius: 3px;
+  border: 1px solid var(--color-ccl-accent);
+  background: var(--color-ccl-accent);
+  color: #fff;
+  font-size: 15px;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  transition:
+    background 0.15s,
+    transform 0.1s,
+    box-shadow 0.15s;
+  box-shadow: 0 2px 8px rgba(19, 112, 243, 0.3);
+}
+.pcl-launch-btn:hover {
+  background: var(--color-ccl-brush4);
+  border-color: var(--color-ccl-brush4);
+  box-shadow: 0 3px 12px rgba(19, 112, 243, 0.38);
+}
+.pcl-launch-btn:active {
+  transform: scale(0.985);
+}
+.pcl-launch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.pcl-launch-btn .sub {
+  font-size: 11px;
+  opacity: 0.85;
+  font-weight: 400;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 输入控件
+   PCL 输入框：3px 圆角、白底、hover/focus 边框变主题色 */
 .field {
   width: 100%;
   background: #ffffff;
-  border: 1px solid var(--color-ccl-border);
-  border-radius: 6px;
+  border: 1px solid var(--color-ccl-gray5);
+  border-radius: 3px;
   color: var(--color-ccl-text);
-  padding: 7px 11px;
+  padding: 0 9px;
+  height: 30px;
   font-size: 13px;
+  font-family: inherit;
   outline: none;
+  transition: border-color 0.14s;
+}
+.field:hover {
+  border-color: var(--color-ccl-brush5);
 }
 .field:focus {
   border-color: var(--color-ccl-accent);
 }
+textarea.field {
+  height: auto;
+  padding: 7px 9px;
+  line-height: 1.5;
+}
+select.field {
+  padding-right: 4px;
+  cursor: pointer;
+}
+.field::placeholder {
+  color: var(--color-ccl-gray4);
+}
 
-/* ---- PCL 风格卡片：白底、细边框、小圆角 ---- */
+/* 开关（PCL MyCheckBox 风格：3px 圆角方框 + 主题色勾） */
+.pcl-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--color-ccl-gray5);
+  cursor: pointer;
+  transition: background 0.16s;
+  flex-shrink: 0;
+}
+.pcl-switch[data-on="true"] {
+  background: var(--color-ccl-accent);
+}
+.pcl-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.16s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.pcl-switch[data-on="true"]::after {
+  transform: translateX(16px);
+}
+
+/* ---------------------------------------------------------------- 容器与排版 */
+/* PCL 没有"带边框卡片"，内容直接铺在白底上，用极淡分隔线分组 */
+.pcl-card {
+  background: #ffffff;
+  border: 1px solid var(--color-ccl-gray6);
+  border-radius: 3px;
+  padding: 14px 16px;
+}
+/* 兼容旧页面：.card 改为 PCL 的浅灰块 */
 .card {
-  background: var(--color-ccl-panel);
-  border: 1px solid var(--color-ccl-border);
-  border-radius: 8px;
-  padding: 16px;
+  background: #ffffff;
+  border: 1px solid var(--color-ccl-gray6);
+  border-radius: 3px;
+  padding: 14px 16px;
+}
+
+/* 页面标题（PCL：14px 粗体 + 下方 12px 次要说明） */
+.pcl-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-ccl-text);
+  letter-spacing: 0.2px;
+}
+.pcl-subtitle {
+  font-size: 12px;
+  color: var(--color-ccl-gray3);
+  margin-top: 2px;
+}
+
+/* 分组小标题（PCL 设置页：13px 粗体 + 底部 1px 分隔线） */
+.pcl-section {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-ccl-gray1);
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--color-ccl-gray6);
+}
+
+/* 列表行（PCL MyListItem：42px 高，hover 浅蓝底） */
+.pcl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 3px;
+  transition: background 0.12s;
+  cursor: pointer;
+}
+.pcl-row:hover {
+  background: var(--color-ccl-brush8);
+}
+.pcl-row[data-active="true"] {
+  background: var(--color-ccl-brush7);
 }
 
 .tag {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: #eef2f7;
-  color: #5a6270;
+  padding: 0 7px;
+  border-radius: 2px;
+  background: var(--color-ccl-gray7);
+  color: var(--color-ccl-gray2);
   font-weight: 600;
+  white-space: nowrap;
 }
 .tag-green {
-  background: #e4f3e4;
-  color: #3e7d3e;
+  background: #e8f6ec;
+  color: #2e7d46;
 }
 .tag-gray {
-  background: #eef0f3;
-  color: #8a919e;
+  background: var(--color-ccl-gray7);
+  color: var(--color-ccl-gray3);
 }
 .tag-orange {
-  background: #faf3e2;
+  background: #fdf3e3;
   color: #9a7223;
+}
+.tag-blue {
+  background: var(--color-ccl-brush7);
+  color: var(--color-ccl-accent);
+}
+
+/* ---------------------------------------------------------------- 浮层
+   PCL 的消息框：白底、3px 圆角、标题居中、底部按钮右对齐 */
+.pcl-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  animation: pcl-fade 0.14s ease-out;
+}
+.pcl-modal {
+  background: #fff;
+  border-radius: 3px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.26);
+  overflow: hidden;
+  animation: pcl-pop 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.pcl-modal-head {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-ccl-gray1);
+  border-bottom: 1px solid var(--color-ccl-gray6);
+}
+.pcl-modal-body {
+  padding: 16px;
+  font-size: 13px;
+  max-height: 58vh;
+  overflow: auto;
+}
+.pcl-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px 14px;
+}
+
+/* 右下角浮动圆按钮组（PCL MyExtraButton：40px 圆，主题色 + 白图标） */
+.pcl-float {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 10px;
+  z-index: 20;
+}
+.pcl-float-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--color-ccl-gray6);
+  color: var(--color-ccl-gray2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  transition:
+    background 0.14s,
+    color 0.14s,
+    transform 0.12s;
+}
+.pcl-float-btn:hover {
+  background: var(--color-ccl-accent);
+  border-color: var(--color-ccl-accent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.pcl-float-btn[data-accent="true"] {
+  background: var(--color-ccl-accent);
+  border-color: var(--color-ccl-accent);
+  color: #fff;
+}
+
+/* Toast：PCL 底部居中的深色小条 */
+.pcl-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 70%;
+  padding: 8px 16px;
+  border-radius: 3px;
+  background: rgba(52, 61, 74, 0.95);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.24);
+  z-index: 60;
+  animation: pcl-toast-in 0.18s ease-out;
+}
+.pcl-toast[data-kind="bad"] {
+  background: rgba(206, 33, 17, 0.95);
+}
+
+@keyframes pcl-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pcl-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes pcl-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+
+/* 通用工具类 */
+.pcl-scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.pcl-divider {
+  height: 1px;
+  background: var(--color-ccl-gray6);
+}
+/* 页面切换动画：PCL 的淡入 + 轻微上移 */
+.pcl-page {
+  animation: pcl-page-in 0.18s ease-out;
+}
+@keyframes pcl-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
 }

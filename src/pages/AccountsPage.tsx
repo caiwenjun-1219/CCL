@@ -103,7 +103,7 @@ export default function AccountsPage() {
 
   return (
     <div>
-      <h1 className="text-lg font-bold mb-5">游戏账户</h1>
+      <h1 className="pcl-title mb-4">游戏账户</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* 添加账户 */}

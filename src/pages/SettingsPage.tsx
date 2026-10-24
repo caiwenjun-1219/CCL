@@ -1,30 +1,48 @@
 import { useEffect, useState } from "react";
-import { Save, RefreshCw, ArrowUpCircle, Cloud, Loader2, KeyRound } from "lucide-react";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { Save, RefreshCw, ArrowUpCircle, Loader2, KeyRound, FolderOpen } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useApp } from "../store/app";
 import { api } from "../lib/tauri";
 
+/** PCL 设置项行：左标题+说明，右控件，底部极淡分隔线 */
+function Row({
+  label,
+  desc,
+  children,
+}: {
+  label: string;
+  desc?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-5 py-2.5 border-b border-ccl-gray6 last:border-0">
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] text-ccl-gray1">{label}</div>
+        {desc && <div className="text-[11.5px] text-ccl-gray3 mt-0.5 leading-relaxed">{desc}</div>}
+      </div>
+      <div className="shrink-0 flex items-center gap-2">{children}</div>
+    </div>
+  );
+}
+
+function Switch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return <div className="pcl-switch" data-on={on} onClick={() => onChange(!on)} role="switch" aria-checked={on} />;
+}
+
 export default function SettingsPage() {
+  const [params] = useSearchParams();
+  const tab = params.get("tab") || "launch";
+  const navigate = useNavigate();
   const { settings, patchSettings, update, checkUpdate, showToast } = useApp();
   const [draft, setDraft] = useState(settings);
-  const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [dlPct, setDlPct] = useState(0);
 
   useEffect(() => setDraft(settings), [settings]);
 
-  const save = async () => {
-    setSaving(true);
-    try {
-      await patchSettings(draft);
-      showToast("设置已保存");
-    } catch (e) {
-      showToast(String(e), "bad");
-    } finally {
-      setSaving(false);
-    }
-  };
+  const commit = (patch: Partial<typeof settings>) => patchSettings(patch);
 
   const check = async () => {
     setChecking(true);
@@ -60,150 +78,160 @@ export default function SettingsPage() {
       multiple: false,
       filters: [{ name: "Java 可执行文件", extensions: ["exe"] }],
     });
-    if (selected) setDraft({ ...draft, java_path: selected as string });
+    if (selected) {
+      setDraft({ ...draft, java_path: selected as string });
+      commit({ java_path: selected as string });
+    }
+  };
+
+  const HEAD: Record<string, { title: string; sub: string }> = {
+    launch: { title: "启动设置", sub: "内存、JVM 参数与 Java 运行环境" },
+    ui: { title: "个性化", sub: "界面与窗口行为" },
+    system: { title: "系统", sub: "下载源与第三方服务凭据" },
+    other: { title: "其他", sub: "更新与关于信息" },
   };
 
   return (
-    <div className="max-w-2xl">
-      <h1 className="text-lg font-bold mb-5">设置</h1>
+    <div className="max-w-[760px]">
+      <h1 className="pcl-title">{HEAD[tab]?.title || "设置"}</h1>
+      <p className="pcl-subtitle">{HEAD[tab]?.sub}</p>
 
-      {/* 云控更新 */}
-      <div className="card mb-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Cloud size={15} className="text-ccl-muted" />
-          <h2 className="text-[13px] font-bold">云控与更新</h2>
-        </div>
-        <div className="text-[12px] space-y-1.5 mb-3">
-          <div className="flex justify-between">
-            <span className="text-ccl-muted">当前版本</span>
-            <b>v{update?.current_version || "…"}</b>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-ccl-muted">最新版本</span>
-            <b className={update?.has_update ? "text-ccl-accent2" : ""}>
-              v{update?.latest_version || "…"}
-            </b>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-ccl-muted">云控服务</span>
-            <span className={update?.cloud_online ? "text-ccl-accent2" : "text-ccl-muted"}>
-              {update?.cloud_online ? "在线（cclconfig.caiwenjun.top）" : "离线（不影响使用）"}
-            </span>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 items-center">
-          <button className="btn btn-ghost" onClick={check} disabled={checking}>
-            {checking ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} 检查更新
-          </button>
-          {update?.has_update && (
-            <button className="btn btn-primary" onClick={install} disabled={installing}>
-              {installing ? (
-                <>
-                  <Loader2 size={12} className="animate-spin" /> {dlPct}%
-                </>
-              ) : (
-                <>
-                  <ArrowUpCircle size={12} /> 更新到 v{update.latest_version}
-                </>
-              )}
-            </button>
-          )}
-          <label className="flex items-center gap-1.5 text-[12px] text-ccl-muted ml-auto">
+      {/* -------------------------------------------------- 启动 */}
+      {tab === "launch" && (
+        <div className="mt-5">
+          <Row label="默认最大内存" desc="新建实例时使用，单位 MB。建议 2048 ~ 8192。">
             <input
-              type="checkbox"
-              checked={draft.auto_check_update}
-              onChange={(e) => setDraft({ ...draft, auto_check_update: e.target.checked })}
+              className="field !w-[120px] text-right"
+              type="number"
+              min={1024}
+              step={512}
+              value={draft.max_memory}
+              onChange={(e) => setDraft({ ...draft, max_memory: Number(e.target.value) })}
+              onBlur={() => commit({ max_memory: draft.max_memory })}
             />
-            启动时自动检查
-          </label>
+            <span className="text-[12px] text-ccl-gray3">MB</span>
+          </Row>
+          <Row label="额外 JVM 参数" desc="追加到启动命令中，留空则使用默认 GC 策略。">
+            <input
+              className="field !w-[320px]"
+              placeholder="-XX:+UseG1GC"
+              value={draft.jvm_args}
+              onChange={(e) => setDraft({ ...draft, jvm_args: e.target.value })}
+              onBlur={() => commit({ jvm_args: draft.jvm_args })}
+            />
+          </Row>
+          <Row label="Java 路径" desc="留空则按 MC 版本自动匹配本机 JDK。">
+            <input
+              className="field !w-[300px]"
+              placeholder="自动选择"
+              value={draft.java_path}
+              onChange={(e) => setDraft({ ...draft, java_path: e.target.value })}
+              onBlur={() => commit({ java_path: draft.java_path })}
+            />
+            <button className="btn !h-[30px]" onClick={pickJava}>
+              <FolderOpen size={12} /> 浏览
+            </button>
+          </Row>
+          <div className="mt-4 text-[11.5px] text-ccl-gray4 flex items-center gap-1.5">
+            <Save size={12} />
+            设置修改后即时生效并自动保存。
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* 下载 */}
-      <div className="card mb-4">
-        <h2 className="text-[13px] font-bold mb-3">下载</h2>
-        <label className="text-[12px] text-ccl-muted block mb-1.5">资源下载源</label>
-        <select
-          className="field mb-3"
-          value={draft.download_source}
-          onChange={(e) => setDraft({ ...draft, download_source: e.target.value })}
-        >
-          <option value="bmclapi">BMCLAPI 国内镜像（推荐，自动回退官方源）</option>
-          <option value="mojang">Mojang 官方源（自动回退国内镜像）</option>
-        </select>
-        <p className="text-[11px] text-ccl-muted leading-relaxed">
-          无论选哪个，单个文件下载失败时都会自动按「首选 → 备用镜像 → 官方源」的顺序一级一级回退。
-        </p>
-      </div>
-
-      {/* 游戏 */}
-      <div className="card mb-4">
-        <h2 className="text-[13px] font-bold mb-3">游戏</h2>
-        <label className="text-[12px] text-ccl-muted block mb-1.5">默认最大内存（MB）</label>
-        <input
-          className="field mb-3"
-          type="number"
-          min={1024}
-          step={512}
-          value={draft.max_memory}
-          onChange={(e) => setDraft({ ...draft, max_memory: Number(e.target.value) })}
-        />
-        <label className="text-[12px] text-ccl-muted block mb-1.5">额外 JVM 参数</label>
-        <input
-          className="field mb-3"
-          placeholder="-XX:+UseG1GC -Dfml.queryResult=confirm"
-          value={draft.jvm_args}
-          onChange={(e) => setDraft({ ...draft, jvm_args: e.target.value })}
-        />
-        <label className="text-[12px] text-ccl-muted block mb-1.5">Java 路径（留空 = 自动选择）</label>
-        <div className="flex gap-2">
-          <input
-            className="field"
-            placeholder="自动"
-            value={draft.java_path}
-            onChange={(e) => setDraft({ ...draft, java_path: e.target.value })}
-          />
-          <button className="btn btn-ghost" onClick={pickJava}>
-            浏览
-          </button>
+      {/* -------------------------------------------------- 个性化 */}
+      {tab === "ui" && (
+        <div className="mt-5">
+          <Row label="界面主题" desc="当前跟随 PCL 经典蓝（#1370F3）。自定义主题色将在后续版本开放。">
+            <div className="flex items-center gap-2">
+              <span className="w-[18px] h-[18px] rounded-[3px]" style={{ background: "#1370f3" }} />
+              <span className="text-[12.5px] text-ccl-gray2">PCL 蓝</span>
+            </div>
+          </Row>
+          <Row label="关闭窗口时的行为" desc="最小化到托盘可让下载任务在后台继续。">
+            <select
+              className="field !w-[220px]"
+              value={draft.close_action}
+              onChange={(e) => commit({ close_action: e.target.value })}
+            >
+              <option value="minimize">最小化到托盘</option>
+              <option value="exit">退出程序</option>
+            </select>
+          </Row>
+          <Row label="启动时自动检查更新" desc="每 30 分钟也会静默检查一次云控配置。">
+            <Switch on={draft.auto_check_update} onChange={(v) => commit({ auto_check_update: v })} />
+          </Row>
         </div>
-      </div>
+      )}
 
-      {/* CurseForge */}
-      <div className="card mb-4">
-        <div className="flex items-center gap-2 mb-3">
-          <KeyRound size={15} className="text-ccl-muted" />
-          <h2 className="text-[13px] font-bold">CurseForge API Key</h2>
+      {/* -------------------------------------------------- 系统 */}
+      {tab === "system" && (
+        <div className="mt-5">
+          <Row label="资源下载源" desc="任何源失败都会自动逐级回退：首选 → 备用镜像 → 官方源。">
+            <select
+              className="field !w-[300px]"
+              value={draft.download_source}
+              onChange={(e) => commit({ download_source: e.target.value })}
+            >
+              <option value="bmclapi">BMCLAPI 国内镜像（推荐）</option>
+              <option value="mojang">Mojang 官方源</option>
+            </select>
+          </Row>
+          <Row label="CurseForge API Key" desc="用于 CurseForge 搜索与整合包导入；Modrinth 无需密钥。">
+            <div className="flex items-center gap-2">
+              <KeyRound size={13} className="text-ccl-gray4" />
+              <input
+                className="field !w-[300px]"
+                placeholder="在 console.curseforge.com 申请"
+                value={draft.curseforge_api_key}
+                onChange={(e) => setDraft({ ...draft, curseforge_api_key: e.target.value })}
+                onBlur={() => commit({ curseforge_api_key: draft.curseforge_api_key })}
+              />
+            </div>
+          </Row>
         </div>
-        <input
-          className="field"
-          placeholder="在 console.curseforge.com 申请"
-          value={draft.curseforge_api_key}
-          onChange={(e) => setDraft({ ...draft, curseforge_api_key: e.target.value })}
-        />
-        <p className="text-[11px] text-ccl-muted mt-2 leading-relaxed">
-          用于 CurseForge 模组搜索与整合包导入。Modrinth 无需密钥。
-        </p>
-      </div>
+      )}
 
-      {/* 行为 */}
-      <div className="card mb-4">
-        <h2 className="text-[13px] font-bold mb-3">窗口行为</h2>
-        <select
-          className="field"
-          value={draft.close_action}
-          onChange={(e) => setDraft({ ...draft, close_action: e.target.value })}
-        >
-          <option value="minimize">关闭窗口时最小化到托盘</option>
-          <option value="exit">关闭窗口时退出程序</option>
-        </select>
-      </div>
-
-      <div className="flex justify-end">
-        <button className="btn btn-primary" onClick={save} disabled={saving}>
-          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} 保存设置
-        </button>
-      </div>
+      {/* -------------------------------------------------- 其他 */}
+      {tab === "other" && (
+        <div className="mt-5">
+          <div className="pcl-section">云控与更新</div>
+          <Row label="当前版本">
+            <span className="text-[13px] font-semibold">v{update?.current_version || "…"}</span>
+          </Row>
+          <Row label="最新版本">
+            <span className={`text-[13px] font-semibold ${update?.has_update ? "text-ccl-accent" : ""}`}>
+              v{update?.latest_version || "…"}
+            </span>
+          </Row>
+          <Row label="云控服务" desc="cclconfig.caiwenjun.top">
+            <span className={`text-[12.5px] ${update?.cloud_online ? "text-[#2e7d46]" : "text-ccl-gray3"}`}>
+              {update?.cloud_online ? "在线" : "离线（不影响使用）"}
+            </span>
+          </Row>
+          <div className="flex gap-2 mt-5">
+            <button className="btn" onClick={check} disabled={checking}>
+              {checking ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} 检查更新
+            </button>
+            {update?.has_update && (
+              <button className="btn btn-primary" onClick={install} disabled={installing}>
+                {installing ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin" /> {dlPct}%
+                  </>
+                ) : (
+                  <>
+                    <ArrowUpCircle size={12} /> 更新到 v{update.latest_version}
+                  </>
+                )}
+              </button>
+            )}
+            <button className="btn ml-auto" onClick={() => navigate("/more/about")}>
+              关于 CCL
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

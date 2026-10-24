@@ -8,19 +8,47 @@ import ModpacksPage from "./pages/ModpacksPage";
 import JavaPage from "./pages/JavaPage";
 import AccountsPage from "./pages/AccountsPage";
 import SettingsPage from "./pages/SettingsPage";
+import LinkPage from "./pages/LinkPage";
+import AboutPage from "./pages/AboutPage";
 
+/**
+ * PCL 式五页签结构：启动 / 下载 / 联机 / 设置 / 更多
+ * 下载、设置、更多 各带 152px 子导航（由 Layout 依路由渲染）
+ */
 export default function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
+        {/* 启动 */}
         <Route path="/" element={<HomePage />} />
-        <Route path="/instances" element={<InstancesPage />} />
-        <Route path="/versions" element={<VersionsPage />} />
-        <Route path="/mods" element={<ModsPage />} />
-        <Route path="/modpacks" element={<ModpacksPage />} />
-        <Route path="/java" element={<JavaPage />} />
-        <Route path="/accounts" element={<AccountsPage />} />
+
+        {/* 下载 */}
+        <Route path="/download" element={<Navigate to="/download/game" replace />} />
+        <Route path="/download/game" element={<VersionsPage />} />
+        <Route path="/download/mod" element={<ModsPage />} />
+        <Route path="/download/pack" element={<ModpacksPage />} />
+        <Route path="/download/java" element={<JavaPage />} />
+
+        {/* 联机 */}
+        <Route path="/link" element={<LinkPage />} />
+
+        {/* 设置 */}
         <Route path="/settings" element={<SettingsPage />} />
+
+        {/* 更多 */}
+        <Route path="/more" element={<Navigate to="/more/version" replace />} />
+        <Route path="/more/version" element={<InstancesPage />} />
+        <Route path="/more/account" element={<AccountsPage />} />
+        <Route path="/more/about" element={<AboutPage />} />
+
+        {/* 旧路由兼容 */}
+        <Route path="/versions" element={<Navigate to="/download/game" replace />} />
+        <Route path="/mods" element={<Navigate to="/download/mod" replace />} />
+        <Route path="/modpacks" element={<Navigate to="/download/pack" replace />} />
+        <Route path="/java" element={<Navigate to="/download/java" replace />} />
+        <Route path="/instances" element={<Navigate to="/more/version" replace />} />
+        <Route path="/accounts" element={<Navigate to="/more/account" replace />} />
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

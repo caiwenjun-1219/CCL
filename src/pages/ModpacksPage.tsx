@@ -48,7 +48,7 @@ export default function ModpacksPage() {
 
   return (
     <div>
-      <h1 className="text-lg font-bold mb-5">整合包</h1>
+      <h1 className="pcl-title mb-4">整合包</h1>
 
       <div className="card mb-5">
         <div className="flex items-start gap-4">

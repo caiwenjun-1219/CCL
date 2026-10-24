@@ -13,11 +13,13 @@
     "windows": [
       {
         "title": "Cwj Craft Launcher",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 940,
-        "minHeight": 620,
+        "width": 1024,
+        "height": 660,
+        "minWidth": 880,
+        "minHeight": 560,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "center": true
       }
     ],

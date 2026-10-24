@@ -10,6 +10,8 @@ interface AppState {
   running: Record<string, boolean>;
   logs: Record<string, string[]>;
   toast: { text: string; kind: "ok" | "bad" } | null;
+  /** PCL 首页左栏选中的实例 */
+  currentInstanceId: string | null;
 
   loadSettings: () => Promise<void>;
   patchSettings: (patch: Partial<AppSettings>) => Promise<void>;
@@ -21,6 +23,7 @@ interface AppState {
   appendLog: (id: string, line: string) => void;
   clearLogs: (id: string) => void;
   showToast: (text: string, kind?: "ok" | "bad") => void;
+  setCurrentInstance: (id: string | null) => void;
 }
 
 const defaultSettings: AppSettings = {
@@ -44,6 +47,13 @@ export const useApp = create<AppState>((set, get) => ({
   running: {},
   logs: {},
   toast: null,
+  currentInstanceId: localStorage.getItem("ccl-current-instance"),
+
+  setCurrentInstance: (id) => {
+    if (id) localStorage.setItem("ccl-current-instance", id);
+    else localStorage.removeItem("ccl-current-instance");
+    set({ currentInstanceId: id });
+  },
 
   loadSettings: async () => {
     try {
