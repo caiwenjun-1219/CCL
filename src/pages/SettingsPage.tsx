@@ -65,7 +65,7 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="text-lg font-bold mb-5">设置</h1>
+      <h1 className="hm-page-title">设置</h1>
 
       {/* 云控更新 */}
       <div className="card mb-4">

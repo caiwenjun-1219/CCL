@@ -45,7 +45,7 @@ export default function JavaPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-5">
-        <h1 className="text-lg font-bold">Java 管理</h1>
+        <h1 className="hm-page-title">Java 管理</h1>
         <button className="btn btn-ghost" onClick={refresh}>
           <RefreshCw size={13} /> 重新扫描
         </button>

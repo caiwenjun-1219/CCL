@@ -126,7 +126,7 @@ export default function ModsPage() {
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h1 className="text-lg font-bold">模组市场</h1>
+        <h1 className="hm-page-title">模组市场</h1>
         <select className="field !w-52" value={instanceId} onChange={(e) => setInstanceId(e.target.value)}>
           {instances.map((i) => (
             <option key={i.id} value={i.id}>

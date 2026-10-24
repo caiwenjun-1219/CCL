@@ -48,7 +48,7 @@ export default function ModpacksPage() {
 
   return (
     <div>
-      <h1 className="text-lg font-bold mb-5">整合包</h1>
+      <h1 className="hm-page-title">整合包</h1>
 
       <div className="card mb-5">
         <div className="flex items-start gap-4">
@@ -77,7 +77,7 @@ export default function ModpacksPage() {
                     </span>
                   )}
                 </div>
-                <div className="h-1.5 bg-[#e6eaef] rounded overflow-hidden">
+                <div className="h-1.5 bg-[#e3e1e9] rounded overflow-hidden">
                   <div
                     className="h-full bg-ccl-accent transition-all"
                     style={{

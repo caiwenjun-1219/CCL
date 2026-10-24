@@ -35,7 +35,7 @@ export default function InstancesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-5">
-        <h1 className="text-lg font-bold">实例管理</h1>
+        <h1 className="hm-page-title">实例管理</h1>
         <button className="btn btn-primary" onClick={() => setCreating(true)}>
           <Plus size={13} /> 新建实例
         </button>
@@ -227,7 +227,7 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                   key={l.id}
                   className={`text-left px-3.5 py-2.5 rounded-lg border transition-colors ${
                     loader === l.id
-                      ? "border-ccl-accent bg-[#e4f3e4]"
+                      ? "border-ccl-accent bg-[rgba(208,213,253,0.5)]"
                       : "border-ccl-border hover:border-ccl-accent/50"
                   }`}
                   onClick={() => setLoader(l.id)}

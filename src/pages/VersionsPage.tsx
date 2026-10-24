@@ -287,7 +287,7 @@ export default function VersionsPage() {
     <div className="h-full flex flex-col min-h-0">
       {/* 顶部工具栏 */}
       <div className="flex flex-wrap items-center gap-2 mb-3 shrink-0">
-        <h1 className="text-lg font-bold mr-1">下载</h1>
+        <h1 className="hm-page-title mr-1">下载</h1>
         <select
           className="field !w-44"
           value={instanceId}
@@ -363,7 +363,7 @@ export default function VersionsPage() {
                     key={v.id}
                     onClick={() => setSelected(v.id)}
                     className={`w-full text-left px-3 py-1.5 flex items-center gap-2 border-b border-ccl-border/40 text-[12px] transition-colors ${
-                      selected === v.id ? "bg-[#e4f3e4]" : "hover:bg-black/4"
+                      selected === v.id ? "bg-[rgba(208,213,253,0.5)]" : "hover:bg-black/4"
                     }`}
                   >
                     <span className="font-semibold truncate flex-1">{v.id}</span>
