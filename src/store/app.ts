@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type AppSettings, type Instance, type Account, type UpdateInfo, type DlProgress } from "../lib/tauri";
+import { isMobile } from "../lib/env";
 
 interface AppState {
   settings: AppSettings;
@@ -82,6 +83,8 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   checkUpdate: async () => {
+    // 移动端（Android）不做云控更新检查：更新通道只有 Windows 安装包
+    if (isMobile()) return;
     try {
       const u = await api.checkCloudUpdate();
       set({ update: u });

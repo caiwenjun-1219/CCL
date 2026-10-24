@@ -11,7 +11,7 @@
 | Java 管理 | 自动扫描本机 JDK、Adoptium 在线下载托管 JDK、按 MC 版本自动选择 Java 主版本 |
 | 账户 | 微软设备码登录（Xbox Live → XSTS → Minecraft 令牌链，自动刷新）+ 离线模式 |
 | 模组市场 | Modrinth API v2 + CurseForge API 双源搜索、版本匹配、一键安装、启用/禁用/删除 |
-| 整合包 | 导入 Modrinth `.mrpack` 与 CurseForge `manifest.json` 整合包（自动装 MC 版本+加载器+全部模组+配置）；导出实例为 `.mrpack` |
+| 整合包 | 导入 Modrinth `.mrpack` 与 CurseForge `manifest.json` 整合包（自动装 MC 版本+加载器+全部模组+配置）；**把文件直接拖到窗口上即自动识别安装**；导出实例为 `.mrpack` |
 | 云控更新 | Cloudflare Worker 后端：启动时自动检查更新、首页公告、强制更新、SHA256 校验、静默安装 |
 | 下载引擎 | 多源回退、分片并发（默认 24 路）、Range 断点续传、失败自动换源、全局下载任务坞 |
 
@@ -76,7 +76,41 @@ npx tsc --noEmit
 npm run tauri build
 ```
 
-Rust 工具链在本机位于 `F:\rust`（RUSTUP_HOME/CARGO_HOME），crates.io 走 rsproxy.cn 镜像。
+Rust 工具链在本机位于 `F:\rust`（RUSTUP_HOME/CARGO_HOME），crates.io 走 ustc 镜像（rsproxy.cn 已不稳定，见 `F:\rust\cargo\config.toml`）。
+
+## Android 手机版
+
+CCL 同时构建 Android 端（Tauri 2 mobile）。**能力边界**：版本 / 整合包 / 模组市场浏览与下载、实例管理、账户登录均可用；**启动游戏不可用**（PC Java 版 Minecraft 无官方 Android 客户端），界面会给出相应提示。游戏数据落在应用私有目录的 `.minecraft`，无需存储权限。
+
+```bash
+# 一次性初始化（生成 src-tauri/gen/android）
+npx tauri android init
+
+# 构建 release APK
+npm run tauri android build --apk
+```
+
+Windows 上若未开启「开发者模式」，`tauri android build` 会在把 `libccl_lib.so` 软链进 `jniLibs` 时失败（无 SeCreateSymbolicLinkPrivilege）。两种解法：
+
+1. 设置 → 隐私和安全性 → **开发者模式**打开，之后命令可直接用；
+2. 或手动复刻其流程（本机已验证可产出可安装 APK）：
+
+```bash
+# 1) cargo 编出 so（NDK 编译器需指向 NDK 的 clang wrapper）
+cargo build --release --target aarch64-linux-android
+
+# 2) 手动复制 so 到 jniLibs（替代 symlink）
+cp src-tauri/target/aarch64-linux-android/release/libccl_lib.so \
+   src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/
+
+# 3) gradle 打包 arm64 变体（排除 rust 任务，避免再触发 cargo+symlink）
+cd src-tauri/gen/android
+./gradlew assembleArm64Release -x rustBuildArm64Release
+
+# 4) zipalign + apksigner 签名（密钥用 keytool 生成，密码自定）
+zipalign -f -p 4 app-arm64-release-unsigned.apk aligned.apk
+apksigner sign --ks <keystore> --ks-pass pass:<pwd> --out CCL-1.0.0-arm64.apk aligned.apk
+```
 
 ## 云控后端部署
 

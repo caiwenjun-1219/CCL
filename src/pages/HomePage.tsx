@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Play, Square, FolderOpen, Terminal, Package, Plus, Loader2, Bell, X, ChevronRight } from "lucide-react";
 import { useApp } from "../store/app";
 import { api, cclUrl } from "../lib/tauri";
+import { isMobile, MOBILE_LAUNCH_HINT } from "../lib/env";
 
 const LOADER_LABEL: Record<string, string> = {
   vanilla: "原版",
@@ -57,6 +58,10 @@ export default function HomePage() {
   }, [instances]);
 
   const play = async (id: string) => {
+    if (isMobile()) {
+      showToast(MOBILE_LAUNCH_HINT, "bad");
+      return;
+    }
     setLaunching(id);
     try {
       const info = await api.launchInstance(id, null);

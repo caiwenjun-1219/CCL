@@ -34,3 +34,7 @@ probe_mirrors*.py
 *.exe
 *.msi
 bundle/
+
+# Android 签名密钥与安装包产物（绝不入库）
+keys/
+*.apk

@@ -9,11 +9,10 @@ type PollResult = { Pending?: never } | { Done: Account } | { Failed: string };
 export default function AccountsPage() {
   const { accounts, loadAccounts, showToast } = useApp();
   const [msState, setMsState] = useState<{
-    device_code: string;
-    user_code: string;
-    verification_uri: string;
-    interval: number;
+    login_url: string;
+    redirect_uri: string;
   } | null>(null);
+  const [manualCode, setManualCode] = useState("");
   const [offlineName, setOfflineName] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -21,13 +20,8 @@ export default function AccountsPage() {
     setBusy(true);
     try {
       const info = await api.msLoginStart();
-      setMsState({
-        device_code: info.device_code,
-        user_code: info.user_code,
-        verification_uri: info.verification_uri,
-        interval: info.interval,
-      });
-      openPath(info.verification_uri).catch(() => {});
+      setMsState({ login_url: info.login_url, redirect_uri: info.redirect_uri });
+      openPath(info.login_url).catch(() => {});
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
@@ -35,7 +29,27 @@ export default function AccountsPage() {
     }
   };
 
-  // 轮询登录状态
+  const submitManual = async () => {
+    if (!msState) return;
+    setBusy(true);
+    try {
+      const res = (await api.msLoginExchange(manualCode.trim(), msState.redirect_uri)) as PollResult;
+      if ("Done" in res && res.Done) {
+        showToast(`登录成功：${res.Done.name}`);
+        setMsState(null);
+        setManualCode("");
+        loadAccounts();
+      } else if ("Failed" in res && res.Failed) {
+        showToast(res.Failed, "bad");
+      }
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 轮询登录状态（loopback 收到回调后自动完成）
   useEffect(() => {
     if (!msState) return;
     let stopped = false;
@@ -44,11 +58,12 @@ export default function AccountsPage() {
     const poll = async () => {
       if (stopped) return;
       try {
-        const res = (await api.msLoginPoll(msState.device_code)) as PollResult;
+        const res = (await api.msLoginPoll()) as PollResult;
         if (stopped) return;
         if ("Done" in res && res.Done) {
           showToast(`登录成功：${res.Done.name}`);
           setMsState(null);
+          setManualCode("");
           loadAccounts();
           return;
         }
@@ -62,9 +77,9 @@ export default function AccountsPage() {
         setMsState(null);
         return;
       }
-      timer = setTimeout(poll, Math.max(msState.interval, 3) * 1000);
+      timer = setTimeout(poll, 2000);
     };
-    timer = setTimeout(poll, Math.max(msState.interval, 3) * 1000);
+    timer = setTimeout(poll, 2000);
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -115,21 +130,38 @@ export default function AccountsPage() {
               <Loader2 size={22} className="animate-spin mx-auto text-ccl-accent2 mb-2.5" />
               <p className="text-[13px] mb-2">等待微软授权…</p>
               <p className="text-[12px] text-ccl-muted mb-2">
-                请在浏览器中输入验证码：
+                浏览器已打开微软登录页，登录成功后会自动返回本启动器。
               </p>
-              <div className="text-2xl font-extrabold tracking-[0.3em] text-ccl-accent2 my-2">
-                {msState.user_code}
-              </div>
-              <p className="text-[11px] text-ccl-muted mb-3">{msState.verification_uri}</p>
               <button
                 className="btn btn-ghost !py-1 !px-3"
-                onClick={() => openPath(msState.verification_uri).catch(() => {})}
+                onClick={() => openPath(msState.login_url).catch(() => {})}
               >
-                <ExternalLink size={12} /> 重新打开页面
+                <ExternalLink size={12} /> 重新打开登录页
               </button>
               <button className="btn btn-ghost !py-1 !px-3 ml-2" onClick={() => setMsState(null)}>
                 取消
               </button>
+
+              <div className="border-t border-ccl-border mt-3.5 pt-3.5 text-left">
+                <label className="text-[12px] text-ccl-muted block mb-1.5">
+                  浏览器未自动跳转？登录后将地址栏中的网址整条粘贴到这里：
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    className="field"
+                    placeholder="http://127.0.0.1:…/?code=…"
+                    value={manualCode}
+                    onChange={(e) => setManualCode(e.target.value)}
+                  />
+                  <button
+                    className="btn btn-ghost shrink-0"
+                    onClick={submitManual}
+                    disabled={busy || !manualCode.trim()}
+                  >
+                    提交
+                  </button>
+                </div>
+              </div>
             </div>
           ) : (
             <>

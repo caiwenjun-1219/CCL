@@ -23,6 +23,7 @@ import {
   HardDrive,
 } from "lucide-react";
 import { useApp } from "../store/app";
+import { isMobile, MOBILE_LAUNCH_HINT } from "../lib/env";
 import {
   api,
   cclUrl,
@@ -98,6 +99,10 @@ export default function InstanceDetailPage() {
 
   const play = async () => {
     if (!inst) return;
+    if (isMobile()) {
+      showToast(MOBILE_LAUNCH_HINT, "bad");
+      return;
+    }
     setLaunching(true);
     try {
       const info = await api.launchInstance(inst.id, null);

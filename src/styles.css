@@ -714,3 +714,66 @@ select.field {
   opacity: 0.5;
   cursor: default;
 }
+
+/* ---------------------------------------------------------------- 移动端适配（Android 手机版）
+   窄屏（≤760px）下：窗口铺满、侧栏由竖排改顶部横排、页签横滚、隐藏窗口按钮 */
+@media (max-width: 760px) {
+  .pcl-window {
+    padding: 0;
+  }
+  .pcl-frame {
+    border-radius: 0;
+    box-shadow: none;
+  }
+  /* 主体由「侧栏 + 内容」横排改为竖排 */
+  .pcl-body {
+    flex-direction: column;
+  }
+  /* 侧栏（含首页启动栏与子导航）通铺顶部，内部横滚 */
+  .pcl-body > .pcl-sidebar {
+    width: 100% !important;
+    max-width: 100%;
+    border-right: none;
+    border-bottom: 1px solid #e7ebf1;
+  }
+  .pcl-body > .pcl-sidebar > .flex-1 {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 6px 8px;
+    gap: 2px;
+  }
+  .pcl-body > .pcl-sidebar > .flex-1 > div {
+    display: flex;
+  }
+  .pcl-nav-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+    height: 34px;
+  }
+  /* 首页启动栏窄屏压缩：账户条与版本信息横排，按钮区贴底 */
+  .pcl-body > .pcl-sidebar > .px-5 {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  /* 标题栏：页签区横滚，隐藏桌面窗口按钮 */
+  .pcl-titlebar .flex-1 {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .pcl-titlebar .flex-1::-webkit-scrollbar {
+    display: none;
+  }
+  .pcl-tab {
+    flex-shrink: 0;
+  }
+  .pcl-titlebar .pcl-winbtn {
+    display: none;
+  }
+  /* 内容区内边距收窄 */
+  .pcl-page {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+}

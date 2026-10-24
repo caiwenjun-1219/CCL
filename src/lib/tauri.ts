@@ -363,17 +363,17 @@ export const api = {
   removeAccount: (uuid: string) => invoke("remove_account", { uuid }),
   msLoginStart: () =>
     invoke<{
-      device_code: string;
-      user_code: string;
-      verification_uri: string;
-      interval: number;
+      login_url: string;
+      redirect_uri: string;
       expires_in: number;
     }>("ms_login_start"),
-  msLoginPoll: (deviceCode: string) =>
-    invoke<{ Pending?: never } | { Done: Account } | { Failed: string }>(
-      "ms_login_poll",
-      { deviceCode }
-    ),
+  msLoginPoll: () =>
+    invoke<{ Pending?: never } | { Done: Account } | { Failed: string }>("ms_login_poll"),
+  msLoginExchange: (code: string, redirectUri: string) =>
+    invoke<{ Pending?: never } | { Done: Account } | { Failed: string }>("ms_login_exchange", {
+      code,
+      redirectUri,
+    }),
   offlineLogin: (name: string) => invoke<Account>("offline_login", { name }),
   refreshAccount: (uuid: string) => invoke<Account>("refresh_account", { uuid }),
 

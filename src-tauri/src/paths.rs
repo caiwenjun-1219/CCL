@@ -28,7 +28,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::instances::Instance;
 use crate::settings;
@@ -84,10 +84,17 @@ pub fn sanitize_folder_name(name: &str) -> String {
     s
 }
 
-/// 默认 Minecraft 文件夹：%APPDATA%\.minecraft（与官方启动器一致）
-pub fn default_game_folder() -> PathBuf {
+/// 默认 Minecraft 文件夹：Windows 为 %APPDATA%\.minecraft（与官方启动器一致）；
+/// Android 落在应用私有数据目录（免存储权限）
+pub fn default_game_folder(app: &AppHandle) -> PathBuf {
     if let Ok(appdata) = std::env::var("APPDATA") {
         return PathBuf::from(appdata).join(".minecraft");
+    }
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(p) = app.path().data_dir() {
+            return p.join(".minecraft");
+        }
     }
     dirs_home().join("AppData").join("Roaming").join(".minecraft")
 }
@@ -113,7 +120,7 @@ pub fn mc_folder(app: &AppHandle) -> PathBuf {
     let s = settings::load(app);
     let raw = s.game_folder.trim();
     if raw.is_empty() {
-        default_game_folder()
+        default_game_folder(app)
     } else {
         PathBuf::from(raw)
     }
@@ -366,7 +373,7 @@ pub fn scan_game_folders(app: AppHandle) -> Vec<GameFolder> {
     }
 
     // 4. 官方启动器文件夹 %APPDATA%\.minecraft
-    let official = default_game_folder();
+    let official = default_game_folder(&app);
     if !out.iter().any(|f| same_path(&f.location, &official)) {
         out.push(GameFolder {
             name: "官方启动器文件夹".into(),

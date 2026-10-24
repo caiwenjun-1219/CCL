@@ -24,6 +24,7 @@ import { useApp } from "../store/app";
 import { api, fmtSize, fmtSpeed, type UpdateInfo } from "../lib/tauri";
 import { PclIcon, CclLogo } from "./PclIcon";
 import LaunchSide from "./LaunchSide";
+import ModpackDrop from "./ModpackDrop";
 import SubNav, { type SubNavGroup } from "./SubNav";
 
 // 浏览器（vite preview）下 getCurrentWindow 不可用，降级为 null 便于纯前端调试
@@ -412,7 +413,7 @@ export default function Layout() {
         <TitleBar />
         {update?.must_update ? <ForceUpdateModal update={update} /> : update && <UpdateBar update={update} />}
 
-        <div className="flex-1 flex min-h-0 relative">
+        <div className="flex-1 flex min-h-0 relative pcl-body">
           {pathname === "/" ? (
             <LaunchSide />
           ) : (
@@ -450,6 +451,7 @@ export default function Layout() {
         </div>
 
         <Toast />
+        <ModpackDrop />
       </div>
     </div>
   );

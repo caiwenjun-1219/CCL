@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ChevronDown, Loader2, UserCircle2, AlertCircle, Boxes } from "lucide-react";
 import { useApp } from "../store/app";
 import { api } from "../lib/tauri";
+import { isMobile, MOBILE_LAUNCH_HINT } from "../lib/env";
 
 const LOADER_LABEL: Record<string, string> = {
   vanilla: "原版",
@@ -53,6 +54,10 @@ export default function LaunchSide() {
 
   const play = async () => {
     if (!current) return;
+    if (isMobile()) {
+      showToast(MOBILE_LAUNCH_HINT, "bad");
+      return;
+    }
     setLaunching(true);
     try {
       const info = await api.launchInstance(current.id, null);
@@ -160,15 +165,22 @@ export default function LaunchSide() {
             <span className="sub">{current?.name}</span>
           </button>
         ) : (
-          <button className="pcl-launch-btn" onClick={play} disabled={!current || launching || notInstalled}>
+          <button
+            className="pcl-launch-btn"
+            onClick={play}
+            disabled={!current || launching || notInstalled || isMobile()}
+            title={isMobile() ? MOBILE_LAUNCH_HINT : undefined}
+          >
             {launching ? (
               <span className="flex items-center gap-2">
                 <Loader2 size={16} className="animate-spin" /> 正在启动
               </span>
+            ) : isMobile() ? (
+              "移动端无法启动"
             ) : (
               "启动游戏"
             )}
-            <span className="sub">{current ? versionLabel || "—" : "未选择版本"}</span>
+            <span className="sub">{current ? (isMobile() ? "请使用桌面版 CCL" : versionLabel || "—") : "未选择版本"}</span>
           </button>
         )}
 
