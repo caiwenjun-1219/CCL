@@ -143,7 +143,7 @@ export default function HomePage() {
       </div>
 
       {/* 实例列表 */}
-      <div className="border border-ccl-gray6 rounded-[3px] overflow-hidden bg-white">
+      <div className="rounded-[3px] overflow-hidden">
         {instances.map((inst, i) => {
           const isRunning = running[inst.id];
           const active = inst.id === currentInstanceId;
@@ -155,7 +155,7 @@ export default function HomePage() {
           return (
             <div
               key={inst.id}
-              className="flex items-center gap-3 px-3 h-[62px] cursor-pointer transition-colors group"
+              className="flex items-center gap-3 px-3 h-[58px] rounded-[3px] cursor-pointer transition-colors group"
               style={{
                 borderTop: i === 0 ? "none" : "1px solid var(--color-ccl-gray6)",
                 background: active ? "var(--color-ccl-brush8)" : undefined,

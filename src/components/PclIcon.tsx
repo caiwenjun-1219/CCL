@@ -53,11 +53,11 @@ export function PclIcon({
 /** CCL 文字 Logo（白色描边，仿 PCL 标题栏 Logo） */
 export function CclLogo({ width = 46 }: { width?: number }) {
   return (
-    <svg viewBox="0 0 56 30" width={width} height={width * (30 / 56)} aria-hidden>
-      <g fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="butt">
-        <path d="M22,5 a10,11 180 1 0 0,18" />
-        <path d="M36,5 a10,11 180 1 0 0,18" />
-        <path d="M42,2 v26 h11" />
+    <svg viewBox="0 0 68 30" width={width} height={width * (30 / 68)} aria-hidden>
+      <g fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="butt">
+        <path d="M24,5 a10,11 180 1 0 0,18" />
+        <path d="M42,5 a10,11 180 1 0 0,18" />
+        <path d="M52,2 v26 h11" />
       </g>
     </svg>
   );
