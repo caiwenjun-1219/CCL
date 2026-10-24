@@ -280,8 +280,52 @@ fn non_empty(s: Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty() && !v.contains("${"))
 }
 
+/// 宽容解析：部分模组的 mod.json 里有裸控制字符（未转义的换行/制表符），
+/// serde_json 严格模式会整份拒绝，而 Fabric 用的 Gson 是宽容的。
+/// 这里把字符串字面量内的裸控制字符转义后重试一次。
+fn lenient_json(s: &str) -> Option<serde_json::Value> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+        return Some(v);
+    }
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut in_str = false;
+    let mut esc = false;
+    for ch in s.chars() {
+        if in_str {
+            if esc {
+                out.push(ch);
+                esc = false;
+                continue;
+            }
+            match ch {
+                '\\' => {
+                    out.push(ch);
+                    esc = true;
+                }
+                '"' => {
+                    out.push(ch);
+                    in_str = false;
+                }
+                c if (c as u32) < 0x20 => match c {
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    _ => out.push_str(&format!("\\u{:04x}", c as u32)),
+                },
+                c => out.push(c),
+            }
+        } else {
+            if ch == '"' {
+                in_str = true;
+            }
+            out.push(ch);
+        }
+    }
+    serde_json::from_str(&out).ok()
+}
+
 fn json_mod(s: &str, id_key: &str, name_key: &str, ver_key: &str) -> Option<ModMeta> {
-    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let v = lenient_json(s)?;
     Some(ModMeta {
         id: non_empty(v.get(id_key)?.as_str().map(String::from)),
         name: non_empty(v.get(name_key).and_then(|x| x.as_str()).map(String::from)),
@@ -328,7 +372,7 @@ fn read_mod_meta(path: &std::path::Path) -> ModMeta {
                             return m;
                         }
                     }
-                } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                } else if let Some(v) = lenient_json(&s) {
                     if let Some(loader) = v.get("quilt_loader") {
                         let m = ModMeta {
                             id: non_empty(loader.get("id").and_then(|x| x.as_str()).map(String::from)),
@@ -373,7 +417,7 @@ fn read_mod_meta(path: &std::path::Path) -> ModMeta {
     if let Ok(mut entry) = zip.by_name("mcmod.info") {
         let mut s = String::new();
         if entry.read_to_string(&mut s).is_ok() {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+            if let Some(v) = lenient_json(&s) {
                 let first = match &v {
                     serde_json::Value::Array(a) => a.first().cloned(),
                     serde_json::Value::Object(o) => o
