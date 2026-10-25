@@ -179,8 +179,8 @@ export default function InstanceDetailPage() {
       </div>
 
       {/* ---------------- 主体 ---------------- */}
-      <div className="flex flex-1 min-h-0 pt-3 gap-4">
-        <aside className="w-[112px] shrink-0 space-y-0.5">
+      <div className="idetail-split flex flex-1 min-h-0 pt-3 gap-4">
+        <aside className="idetail-nav w-[112px] shrink-0 space-y-0.5">
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = tab === t.key;

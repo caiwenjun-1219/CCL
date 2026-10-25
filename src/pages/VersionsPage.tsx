@@ -344,9 +344,9 @@ export default function VersionsPage() {
         </div>
       )}
 
-      <div className="flex-1 flex gap-4 min-h-0">
+      <div className="ver-split flex-1 flex gap-4 min-h-0">
         {/* 左：PCL 风格分区版本列表（全部版本） */}
-        <div className="w-[320px] shrink-0 card !p-0 overflow-auto min-h-0">
+        <div className="ver-list w-[320px] shrink-0 card !p-0 overflow-auto min-h-0">
           {manifestLoading && (
             <p className="p-4 text-[12px] text-ccl-muted flex items-center gap-2">
               <Loader2 size={12} className="animate-spin" /> 正在获取版本清单…

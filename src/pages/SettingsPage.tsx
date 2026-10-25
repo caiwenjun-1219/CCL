@@ -36,7 +36,7 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-5 py-2.5 border-b border-ccl-gray6 last:border-0">
+    <div className="pcl-setting-row flex items-center gap-5 py-2.5 border-b border-ccl-gray6 last:border-0">
       <div className="flex-1 min-w-0">
         <div className="text-[13px] text-ccl-gray1">{label}</div>
         {desc && <div className="text-[11.5px] text-ccl-gray3 mt-0.5 leading-relaxed">{desc}</div>}

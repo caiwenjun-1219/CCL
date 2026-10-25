@@ -736,31 +736,80 @@ select.field {
     border-right: none;
     border-bottom: 1px solid #e7ebf1;
   }
-  .pcl-body > .pcl-sidebar > .flex-1 {
-    display: flex;
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
+  /* 子导航列表：改为一行横排、可横向滑动 */
+  .pcl-subnav-list {
+    display: flex !important;
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
     padding: 6px 8px;
     gap: 2px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
-  .pcl-body > .pcl-sidebar > .flex-1 > div {
+  .pcl-subnav-list::-webkit-scrollbar {
+    display: none;
+  }
+  .pcl-subnav-list > div {
     display: flex;
+    flex-shrink: 0;
   }
   .pcl-nav-item {
     flex-shrink: 0;
     white-space: nowrap;
     height: 34px;
+    padding: 0 12px;
   }
-  /* 首页启动栏窄屏压缩：账户条与版本信息横排，按钮区贴底 */
-  .pcl-body > .pcl-sidebar > .px-5 {
-    padding-left: 14px;
-    padding-right: 14px;
+  /* 侧栏底部的版本号在窄屏无用，隐藏以节省高度 */
+  .pcl-subnav-footer {
+    display: none;
+  }
+  /* 首页启动栏窄屏压缩：账户条、预览、按钮区改为紧凑的横向顶部条 */
+  .pcl-launch-side {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    overflow: visible;
+  }
+  .pcl-launch-side .ls-account {
+    padding: 0 !important;
+    flex-shrink: 0;
+    max-width: 46%;
+  }
+  .pcl-launch-side .ls-account > button {
+    max-width: 100%;
+  }
+  .pcl-launch-side .ls-account .max-w-\[180px\] {
+    max-width: 130px;
+  }
+  /* 窄屏隐藏大图标预览区，把空间留给操作按钮 */
+  .pcl-launch-side .ls-preview {
+    display: none;
+  }
+  .pcl-launch-side .ls-actions {
+    padding: 0 !important;
+    flex: 1;
+    min-width: 0;
+    /* 用 grid 而非 flex：两个按钮各占一格，避免 width:100% 的按钮互相挤压 */
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .pcl-launch-side .ls-actions > .pcl-launch-btn {
+    width: 100%;
+    min-width: 0;
+  }
+  .pcl-launch-side .ls-actions > .btn {
+    white-space: nowrap;
   }
   /* 标题栏：页签区横滚，隐藏桌面窗口按钮 */
   .pcl-titlebar .flex-1 {
     overflow-x: auto;
     scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
   .pcl-titlebar .flex-1::-webkit-scrollbar {
     display: none;
@@ -771,9 +820,120 @@ select.field {
   .pcl-titlebar .pcl-winbtn {
     display: none;
   }
+  /* 标题栏 Logo 缩小，给页签让出空间 */
+  .pcl-titlebar > div:first-child {
+    padding-left: 12px !important;
+    padding-right: 4px !important;
+  }
+  .pcl-titlebar > div:first-child svg {
+    width: 40px;
+    height: auto;
+  }
   /* 内容区内边距收窄 */
   .pcl-page {
     padding-left: 12px !important;
     padding-right: 12px !important;
+  }
+  /* 设置项行：窄屏改为上下堆叠，避免右侧固定宽控件把左列文字挤成竖排 */
+  .pcl-setting-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .pcl-setting-row > div:last-child {
+    width: 100%;
+  }
+  .pcl-setting-row select.field,
+  .pcl-setting-row input.field {
+    width: 100% !important;
+  }
+  /* 窄屏下所有固定宽度的输入框改为自适应（覆盖 Tailwind 的 !w-[xxx] ） */
+  .pcl-page .field {
+    max-width: 100% !important;
+  }
+  .pcl-page input.field[class*="w-["],
+  .pcl-page select.field[class*="w-["],
+  .pcl-page textarea.field[class*="w-["] {
+    width: 100% !important;
+  }
+  /* 版本页：左侧版本列表窄屏改为横向滑动条 */
+  .ver-split {
+    flex-direction: column;
+  }
+  .ver-list {
+    width: 100% !important;
+    max-height: 190px;
+    flex-shrink: 0;
+  }
+  /* 实例详情：左侧页签窄屏改为横向滑动条 */
+  .idetail-split {
+    flex-direction: column;
+  }
+  .idetail-nav {
+    width: 100% !important;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .idetail-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .idetail-nav > button {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  /* 日志页：文件列表窄屏改为横向滑动条 */
+  .logs-split {
+    flex-direction: column;
+    height: auto !important;
+  }
+  .logs-files {
+    width: 100% !important;
+    max-height: 120px;
+    flex-shrink: 0;
+  }
+  /* 浮层：下载任务面板与拖拽提示窄屏收窄到屏幕内 */
+  .dl-panel {
+    right: 8px !important;
+    width: calc(100vw - 16px) !important;
+    max-height: 46vh;
+  }
+  .drop-hint {
+    width: calc(100vw - 32px) !important;
+    height: 180px;
+  }
+}
+
+/* 更窄的手机（≤420px）：进一步收紧标题栏与页签 */
+@media (max-width: 420px) {
+  .pcl-titlebar {
+    height: 44px;
+  }
+  .pcl-titlebar > div:first-child svg {
+    width: 34px;
+  }
+  .pcl-tab {
+    padding: 0 9px;
+    gap: 5px;
+    font-size: 12.5px;
+  }
+  .pcl-tab span {
+    display: none;
+  }
+  .pcl-tab[data-active="true"] span {
+    display: inline;
+  }
+  .pcl-nav-item {
+    padding: 0 10px;
+    font-size: 12.5px;
+  }
+  .pcl-launch-side .ls-actions {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .pcl-launch-side .ls-actions > .btn {
+    width: 100%;
   }
 }

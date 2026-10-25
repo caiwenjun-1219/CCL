@@ -509,8 +509,8 @@ export function LogsPanel({ instanceId }: { instanceId: string }) {
       {files.length === 0 ? (
         <Empty text="还没有日志。启动一次游戏后会生成 logs/latest.log。" />
       ) : (
-        <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[280px]">
-          <div className="w-[190px] shrink-0 overflow-auto rounded-[3px] border border-ccl-border bg-white">
+        <div className="logs-split flex gap-3 h-[calc(100vh-260px)] min-h-[280px]">
+          <div className="logs-files w-[190px] shrink-0 overflow-auto rounded-[3px] border border-ccl-border bg-white">
             {files.map((f) => (
               <button
                 key={f.name}

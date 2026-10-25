@@ -114,7 +114,7 @@ export default function ModpackDrop() {
           </div>
         </div>
       ) : (
-        <div className="w-[380px] h-[240px] bg-white/95 rounded-[6px] border-2 border-dashed border-ccl-accent shadow-[0_18px_50px_rgba(0,0,0,.28)] flex flex-col items-center justify-center gap-3 pointer-events-none">
+        <div className="drop-hint w-[380px] h-[240px] bg-white/95 rounded-[6px] border-2 border-dashed border-ccl-accent shadow-[0_18px_50px_rgba(0,0,0,.28)] flex flex-col items-center justify-center gap-3 pointer-events-none">
           <div className="w-[52px] h-[52px] rounded-full bg-ccl-accent/10 flex items-center justify-center">
             <Package size={26} className="text-ccl-accent" />
           </div>

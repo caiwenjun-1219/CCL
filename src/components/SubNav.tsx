@@ -24,7 +24,7 @@ export default function SubNav({
   const location = useLocation();
   return (
     <>
-      <div className="flex-1 overflow-y-auto py-2">
+      <div className="pcl-subnav-list flex-1 overflow-y-auto py-2">
         {groups.map((g, gi) => (
           <div key={gi} className={gi > 0 ? "mt-1" : ""}>
             {g.title && (
@@ -59,7 +59,7 @@ export default function SubNav({
         ))}
       </div>
       {footer && (
-        <div className="px-4 py-2.5 text-[11px] text-ccl-gray4 leading-relaxed shrink-0">
+        <div className="pcl-subnav-footer px-4 py-2.5 text-[11px] text-ccl-gray4 leading-relaxed shrink-0">
           {footer}
         </div>
       )}

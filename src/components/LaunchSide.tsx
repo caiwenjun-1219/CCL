@@ -89,9 +89,9 @@ export default function LaunchSide() {
   const notInstalled = !!current && current.loader !== "vanilla" && !current.installed_version_id;
 
   return (
-    <aside className="pcl-sidebar w-[300px]" ref={wrapRef}>
+    <aside className="pcl-sidebar pcl-launch-side w-[300px]" ref={wrapRef}>
       {/* 顶部：当前账户（PCL 的正版/离线登录方式胶囊） */}
-      <div className="px-5 pt-5 flex justify-center shrink-0">
+      <div className="ls-account px-5 pt-5 flex justify-center shrink-0">
         <button
           className="h-[27px] inline-flex items-center gap-1.5 pl-1.5 pr-3 rounded-[13.5px] bg-ccl-gray8 hover:bg-ccl-brush8 border border-transparent hover:border-ccl-brush6 transition-colors max-w-full"
           onClick={() => navigate("/more/account")}
@@ -108,7 +108,7 @@ export default function LaunchSide() {
       </div>
 
       {/* 中部：当前实例概览（占 PCL 皮肤预览的位置） */}
-      <div className="flex-1 min-h-0 flex flex-col items-center justify-center px-5 gap-3">
+      <div className="ls-preview flex-1 min-h-0 flex flex-col items-center justify-center px-5 gap-3">
         {current ? (
           <>
             <div
@@ -158,7 +158,7 @@ export default function LaunchSide() {
       </div>
 
       {/* 底部：启动按钮 + 版本选择（PCL：54px 主按钮 + 35px 次按钮） */}
-      <div className="px-5 pb-5 shrink-0 flex flex-col gap-2.5">
+      <div className="ls-actions px-5 pb-5 shrink-0 flex flex-col gap-2.5">
         {isRunning ? (
           <button className="pcl-launch-btn !bg-[#e34b4b] !border-[#e34b4b] hover:!bg-[#ee5b5b]" onClick={stop}>
             结束游戏
@@ -185,7 +185,7 @@ export default function LaunchSide() {
         )}
 
         <button
-          className="btn !h-[35px] !w-full"
+          className="btn ls-pick !h-[35px]"
           onClick={() => (instances.length ? setPickerOpen((v) => !v) : navigate("/download/game"))}
         >
           版本选择

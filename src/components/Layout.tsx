@@ -177,7 +177,7 @@ function DownloadCenter() {
       </button>
 
       {open && (
-        <div className="absolute right-[20px] bottom-[64px] w-[380px] max-h-[340px] bg-white rounded-[3px] border border-ccl-gray6 shadow-[0_10px_32px_rgba(0,0,0,.2)] overflow-hidden z-30">
+        <div className="dl-panel absolute right-[20px] bottom-[64px] w-[380px] max-h-[340px] bg-white rounded-[3px] border border-ccl-gray6 shadow-[0_10px_32px_rgba(0,0,0,.2)] overflow-hidden z-30">
           <div className="h-[36px] px-3 flex items-center justify-between border-b border-ccl-gray6">
             <span className="text-[13px] font-bold">下载任务</span>
             <button className="text-ccl-gray3 hover:text-ccl-text" onClick={() => setOpen(false)}>
