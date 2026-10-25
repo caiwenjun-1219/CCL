@@ -198,11 +198,28 @@ pub fn auto_select_java(app: &AppHandle, mc_version: &str) -> Result<JavaInfo, S
     }
 }
 
+/// Adoptium `/v3/assets/latest/...` 返回的单个资产。
+///
+/// 注意：真实响应里**没有 `release` 字段**，版本信息在顶层 `version` 对象里
+/// （`version.semver` / `version.openjdk_version`）。之前把 `release` 声明成必填
+/// 导致 serde 反序列化必然失败（`error decoding response body`），Java 下载完全不可用。
+/// 所有可选字段一律 `#[serde(default)]`，避免上游字段增删就整个接口挂掉。
 #[derive(Debug, Deserialize)]
 struct AdoptiumAsset {
     binary: AdoptiumBinary,
-    #[allow(dead_code)]
-    release: serde_json::Value,
+    #[serde(default)]
+    version: AdoptiumVersion,
+    /// 例如 `jdk-17.0.20.1+1`，作为版本号的可靠兜底
+    #[serde(default)]
+    release_name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AdoptiumVersion {
+    #[serde(default)]
+    semver: String,
+    #[serde(default)]
+    openjdk_version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,8 +230,56 @@ struct AdoptiumBinary {
 #[derive(Debug, Deserialize)]
 struct AdoptiumPackage {
     link: String,
+    /// 某些构建没有签名校验值，Adoptium 会给 `null`
     #[serde(default)]
-    checksum: String,
+    checksum: Option<String>,
+}
+
+/// 带重试的 Adoptium 元数据请求。
+///
+/// 实测 api.adoptium.net 直连存在间歇性握手失败（同一 URL 连续请求约有 1/4 概率
+/// 报 `error sending request`），单次请求会让用户看到「下载失败」。这里最多重试 3 次。
+async fn fetch_adoptium_assets(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<Vec<AdoptiumAsset>, String> {
+    const MAX_TRY: u32 = 3;
+    let mut last_err = String::new();
+    for attempt in 1..=MAX_TRY {
+        match client.get(url).send().await {
+            Err(e) => {
+                last_err = format!("请求 Adoptium 失败: {e}");
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .await
+                    .map_err(|e| format!("读取 Adoptium 响应失败: {e}"))?;
+                if !status.is_success() {
+                    last_err = format!(
+                        "Adoptium 返回 HTTP {status}：{}",
+                        body.chars().take(200).collect::<String>()
+                    );
+                    // 4xx 是请求本身有问题（版本号非法等），重试没意义
+                    if status.is_client_error() {
+                        return Err(last_err);
+                    }
+                } else {
+                    return serde_json::from_str(&body).map_err(|e| {
+                        format!(
+                            "解析 Adoptium 响应失败: {e}（响应开头：{}）",
+                            body.chars().take(200).collect::<String>()
+                        )
+                    });
+                }
+            }
+        }
+        if attempt < MAX_TRY {
+            tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64)).await;
+        }
+    }
+    Err(format!("{last_err}（已重试 {MAX_TRY} 次）"))
 }
 
 /// 从 Adoptium API 下载指定主版本的 JDK（自动选最新 patch）
@@ -224,27 +289,26 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
     let url = format!(
         "https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
     );
-    let assets: Vec<AdoptiumAsset> = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("请求 Adoptium 失败: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("解析 Adoptium 响应失败: {e}"))?;
+    let assets = fetch_adoptium_assets(&client, &url).await?;
 
     let asset = assets
         .first()
-        .ok_or_else(|| "Adoptium 未返回可用 JDK".to_string())?;
+        .ok_or_else(|| format!("Adoptium 未返回 Java {major} 的可用 JDK"))?;
     let link = asset.binary.package.link.clone();
+    if link.is_empty() {
+        return Err("Adoptium 返回的下载地址为空".to_string());
+    }
 
-    let semver = asset
-        .release
-        .get("version")
-        .and_then(|v| v.get("semver"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(&format!("{major}.0.0+0"))
-        .to_string();
+    // 版本号：version.semver → version.openjdk_version → release_name → 兜底
+    let semver = if !asset.version.semver.is_empty() {
+        asset.version.semver.clone()
+    } else if !asset.version.openjdk_version.is_empty() {
+        asset.version.openjdk_version.clone()
+    } else if !asset.release_name.is_empty() {
+        asset.release_name.clone()
+    } else {
+        format!("{major}.0.0+0")
+    };
 
     let zip_path = settings::java_dir(&app).join(format!("{semver}.zip"));
     let task = DlTask::new(
