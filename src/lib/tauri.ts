@@ -13,6 +13,8 @@ export interface AppSettings {
   java_path: string;
   window_width: number | null;
   window_height: number | null;
+  /** 自建 Azure 应用 client_id（留空 = 用官方启动器 client_id） */
+  microsoft_client_id: string;
   /** Minecraft 文件夹（.minecraft 根），空 = %APPDATA%\.minecraft */
   game_folder: string;
   /** 版本隔离策略 0 关闭 / 1 仅模组实例 / 2 仅非正式版 / 3 两者 / 4 全部 */
@@ -380,16 +382,17 @@ export const api = {
   removeAccount: (uuid: string) => invoke("remove_account", { uuid }),
   msLoginStart: () =>
     invoke<{
+      mode: string;
+      user_code: string;
+      device_code: string;
+      verification_uri: string;
+      interval: number;
       login_url: string;
-      redirect_uri: string;
       expires_in: number;
     }>("ms_login_start"),
-  msLoginPoll: () => invoke<LoginPollResult>("ms_login_poll"),
-  msLoginExchange: (code: string, redirectUri: string) =>
-    invoke<LoginPollResult>("ms_login_exchange", {
-      code,
-      redirectUri,
-    }),
+  msLoginPoll: (deviceCode: string) =>
+    invoke<LoginPollResult>("ms_login_poll", { deviceCode }),
+  msLoginExchange: (code: string) => invoke<LoginPollResult>("ms_login_exchange", { code }),
   offlineLogin: (name: string) => invoke<Account>("offline_login", { name }),
   refreshAccount: (uuid: string) => invoke<Account>("refresh_account", { uuid }),
 

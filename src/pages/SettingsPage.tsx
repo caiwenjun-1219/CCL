@@ -420,6 +420,21 @@ export default function SettingsPage() {
               />
             </div>
           </Row>
+          <Row
+            label="微软应用 client_id"
+            desc="留空 = 使用官方启动器（需手动粘贴授权码）。填入自建 Azure 应用的 client_id 可使用设备码登录，体验更顺。"
+          >
+            <div className="flex items-center gap-2">
+              <KeyRound size={13} className="text-ccl-gray4" />
+              <input
+                className="field !w-[300px]"
+                placeholder="留空使用官方 client_id"
+                value={draft.microsoft_client_id ?? ""}
+                onChange={(e) => setDraft({ ...draft, microsoft_client_id: e.target.value })}
+                onBlur={() => commit({ microsoft_client_id: draft.microsoft_client_id ?? "" })}
+              />
+            </div>
+          </Row>
         </div>
       )}
 

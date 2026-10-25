@@ -1,34 +1,43 @@
-//! 账户体系：微软登录（授权码流，loopback 收 code）+ 离线模式
+//! 账户体系：微软登录 + 离线模式
 //!
-//! 2026-10-24：微软已对官方启动器 client_id 关闭设备码流（devicecode 端点
-//! 返回 AADSTS700016，而 authorize 端点正常），故改用授权码流：
-//! 本地起 loopback HTTP 服务 → 浏览器登录后 302 回 localhost → 自动拿到 code
-//! → 用 https://login.live.com/oauth20_token.srf 换 access/refresh token。
-//! 同时保留手动粘贴授权码的兜底命令（ms_login_exchange）。
+//! 2026-10-24 调查结论：
+//! - 微软已对官方启动器 client_id `00000000402b5328` **关闭设备码流**
+//!   （`devicecode` 端点返回 AADSTS700016，authorize 端点正常）。
+//! - 该 client_id 的 redirect_uri 白名单里**不含 localhost / 127.0.0.1**，
+//!   所以 loopback 自动收码方案同样被微软拒绝。
+//! - 白名单内可用：`https://login.microsoftonline.com/common/oauth2/nativeclient`、
+//!   `https://login.live.com/oauth20_desktop.srf`、`urn:ietf:wg:oauth:2.0:oob`。
+//!
+//! 因此本模块实现**双模式**登录：
+//! - `device` 模式：用户在设置里填入自建 Azure 应用的 client_id，走标准设备码流
+//!   （体验最顺：显示验证码 + 打开验证页 + 自动轮询）。
+//! - `code` 模式：默认（官方 client_id），走授权码流，用户在浏览器完成授权后
+//!   从地址栏手动复制授权码粘贴回来。
 
 use md5::{Digest as Md5Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 use crate::downloader;
 use crate::settings;
 
-/// Minecraft 官方启动器客户端 ID（授权码流实测可用）
+/// Minecraft 官方启动器客户端 ID（授权码流实测可用；设备码流已被微软关闭）
 const MS_CLIENT_ID: &str = "00000000402b5328";
 /// 授权端点（consumers tenant = 个人微软账户）
 const MS_AUTHORIZE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
+/// 设备码端点（仅自建应用可用）
+const MS_DEVICE_CODE_URL: &str =
+    "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
+/// v2 令牌端点（设备码 grant 使用）
+const MS_V2_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 /// 令牌端点（MSA v1，对官方 client_id 同时支持授权码与刷新令牌）
 const MS_TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
+/// 微软白名单内的回调地址（loopback / localhost 会被拒）
+const MS_REDIRECT_URI: &str = "https://login.live.com/oauth20_desktop.srf";
 const MS_SCOPE: &str = "XboxLive.signin offline_access";
-/// 单次登录会话有效期
-const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
@@ -75,43 +84,19 @@ pub fn remove_account(app: AppHandle, uuid: String) -> Result<(), String> {
 
 #[derive(Debug, Serialize)]
 pub struct MsLoginStart {
-    /// 用户在浏览器中打开的授权地址
+    /// 登录模式："device" = 设备码（需自建 app） / "code" = 授权码（官方 client_id）
+    pub mode: String,
+    /// 设备码模式：用户需在浏览器输入的验证码
+    pub user_code: String,
+    /// 设备码模式：轮询用的 device_code
+    pub device_code: String,
+    /// 设备码模式：验证页地址
+    pub verification_uri: String,
+    /// 设备码模式：轮询间隔（秒）
+    pub interval: u64,
+    /// 授权码模式：用户需要打开的授权页地址
     pub login_url: String,
-    /// loopback 回调地址
-    pub redirect_uri: String,
     pub expires_in: u64,
-}
-
-/// 待完成的登录会话（loopback 回调或用户手动粘贴后填充）
-struct PendingLogin {
-    code: Option<String>,
-    error: Option<String>,
-    /// 授权时使用的 loopback 地址（换 token 必须一致）
-    redirect_uri: String,
-    deadline: Instant,
-}
-
-fn pending_slot() -> &'static Mutex<Option<PendingLogin>> {
-    static SLOT: OnceLock<Mutex<Option<PendingLogin>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
-}
-
-/// 取出待处理的回调结果；超时/被拒返回 Err
-fn take_pending() -> Result<Option<(String, String)>, String> {
-    let mut guard = pending_slot().lock().unwrap();
-    let Some(p) = guard.as_ref() else {
-        return Ok(None);
-    };
-    if Instant::now() > p.deadline {
-        *guard = None;
-        return Err("登录超时，请重新开始".into());
-    }
-    if let Some(err) = &p.error {
-        let msg = err.clone();
-        *guard = None;
-        return Err(msg);
-    }
-    Ok(p.code.clone().map(|c| (c, p.redirect_uri.clone())))
 }
 
 /// 从 query string 中提取 code / error 参数
@@ -170,83 +155,64 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-/// 第一步：起 loopback 服务并生成授权 URL（前端打开浏览器即可）
+/// 读取生效的微软客户端 ID：优先用户自建应用，其次官方启动器
+fn client_id(app: &AppHandle) -> String {
+    let custom = settings::load(app).microsoft_client_id.trim().to_string();
+    if custom.is_empty() {
+        MS_CLIENT_ID.to_string()
+    } else {
+        custom
+    }
+}
+
+/// 第一步：开始登录
+/// - 自建 Azure 应用（client_id 可用）→ 设备码流，体验最顺
+/// - 官方 client_id → 授权码流（微软已关闭其设备码流），需手动复制授权码
 #[tauri::command]
-pub async fn ms_login_start() -> Result<MsLoginStart, String> {
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("无法启动本地登录服务: {e}"))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let redirect_uri = format!("http://127.0.0.1:{port}");
+pub async fn ms_login_start(app: AppHandle) -> Result<MsLoginStart, String> {
+    let cid = client_id(&app);
+    let client = downloader::http_client();
 
-    *pending_slot().lock().unwrap() = Some(PendingLogin {
-        code: None,
-        error: None,
-        redirect_uri: redirect_uri.clone(),
-        deadline: Instant::now() + LOGIN_TIMEOUT,
-    });
+    // 先试设备码流：官方 client_id 会返回 AADSTS700016，此时回退到授权码流
+    let resp = client
+        .post(MS_DEVICE_CODE_URL)
+        .form(&[
+            ("client_id", cid.as_str()),
+            ("scope", MS_SCOPE),
+            ("tenant", "/consumers"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("请求设备码失败: {e}"))?;
 
-    // 后台等待浏览器回调（登录成功后 302 回 loopback）
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-            let mut buf = [0u8; 4096];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            if n == 0 {
-                continue;
-            }
-            let request = String::from_utf8_lossy(&buf[..n]).to_string();
-            let path = request
-                .lines()
-                .next()
-                .and_then(|l| l.split(' ').nth(1))
-                .unwrap_or("")
-                .to_string();
-            let query = path.split('?').nth(1).unwrap_or("").to_string();
+    if resp.status().is_success() {
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        return Ok(MsLoginStart {
+            mode: "device".into(),
+            user_code: json["user_code"].as_str().unwrap_or("").to_string(),
+            device_code: json["device_code"].as_str().unwrap_or("").to_string(),
+            verification_uri: json["verification_uri"].as_str().unwrap_or("").to_string(),
+            interval: json["interval"].as_u64().unwrap_or(5),
+            login_url: String::new(),
+            expires_in: json["expires_in"].as_u64().unwrap_or(900),
+        });
+    }
 
-            let (code, error) = parse_callback(&query);
-            if code.is_some() || error.is_some() {
-                let body = if error.is_some() {
-                    "<html><body style=\"font-family:sans-serif;text-align:center;padding-top:80px\">\
-                     <h2>授权未完成</h2><p>请返回 CCL 重试。</p></body></html>"
-                } else {
-                    "<html><body style=\"font-family:sans-serif;text-align:center;padding-top:80px\">\
-                     <h2>登录成功</h2><p>请返回 CCL 启动器。</p></body></html>"
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
-                if let Some(p) = pending_slot().lock().unwrap().as_mut() {
-                    p.code = code;
-                    p.error = error;
-                }
-                break;
-            }
-
-            // favicon 等无关请求，回 404 继续等
-            let response =
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-
+    // 设备码流不可用 → 授权码流（redirect_uri 用微软白名单内的 desktop.srf）
     let login_url = format!(
-        "{MS_AUTHORIZE_URL}?client_id={MS_CLIENT_ID}&scope={}&response_type=code&redirect_uri={}&ui_locales=zh-CN",
+        "{MS_AUTHORIZE_URL}?client_id={}&scope={}&response_type=code&redirect_uri={}&ui_locales=zh-CN",
+        cid,
         url_encode(MS_SCOPE),
-        url_encode(&redirect_uri),
+        url_encode(MS_REDIRECT_URI),
     );
-
     Ok(MsLoginStart {
+        mode: "code".into(),
+        user_code: String::new(),
+        device_code: String::new(),
+        verification_uri: String::new(),
+        interval: 5,
         login_url,
-        redirect_uri,
-        expires_in: LOGIN_TIMEOUT.as_secs(),
+        expires_in: 900,
     })
 }
 
@@ -260,27 +226,57 @@ pub enum LoginPoll {
     Failed(String),
 }
 
-/// 第二步：轮询登录结果（loopback 收到 code 后自动完成后续链路）
+/// 设备码流：轮询令牌
 #[tauri::command]
-pub async fn ms_login_poll(app: AppHandle) -> Result<LoginPoll, String> {
-    let (code, redirect_uri) = match take_pending() {
-        Ok(Some(v)) => v,
-        Ok(None) => return Ok(LoginPoll::Pending),
-        Err(e) => return Ok(LoginPoll::Failed(e)),
-    };
-    finish_login(&app, &code, &redirect_uri).await
+pub async fn ms_login_poll(app: AppHandle, device_code: String) -> Result<LoginPoll, String> {
+    let client = downloader::http_client();
+    let resp = client
+        .post(MS_V2_TOKEN_URL)
+        .form(&[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("client_id", client_id(&app).as_str()),
+            ("device_code", device_code.as_str()),
+            ("scope", MS_SCOPE),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("轮询失败: {e}"))?;
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(err) = json.get("error").and_then(|e| e.as_str()) {
+        return match err {
+            "authorization_pending" | "slow_down" => Ok(LoginPoll::Pending),
+            "expired_token" => Ok(LoginPoll::Failed("设备码已过期，请重新开始".into())),
+            "access_denied" => Ok(LoginPoll::Failed("用户拒绝了授权".into())),
+            other => Ok(LoginPoll::Failed(format!("登录失败: {other}"))),
+        };
+    }
+
+    let ms_token = json["access_token"].as_str().unwrap_or("").to_string();
+    let refresh_token = json["refresh_token"].as_str().unwrap_or("").to_string();
+    let expires_in = json["expires_in"].as_i64().unwrap_or(86400);
+    if ms_token.is_empty() {
+        return Ok(LoginPoll::Failed("未获取到访问令牌".into()));
+    }
+
+    let account = complete_ms_login(&client, &ms_token, &refresh_token, expires_in).await?;
+    let mut accounts = load_accounts(&app);
+    accounts.retain(|a| a.uuid != account.uuid);
+    accounts.push(account.clone());
+    save_accounts(&app, &accounts)?;
+    Ok(LoginPoll::Done(account))
 }
 
-/// 兜底：用户从浏览器地址栏手动复制授权码后粘贴进来
+/// 授权码流：用户手动粘贴授权码后换取令牌
 #[tauri::command]
-pub async fn ms_login_exchange(
-    app: AppHandle,
-    code: String,
-    redirect_uri: String,
-) -> Result<LoginPoll, String> {
+pub async fn ms_login_exchange(app: AppHandle, code: String) -> Result<LoginPoll, String> {
     let mut code = code.trim().to_string();
-    // 兼容整条回调 URL 粘贴（http://127.0.0.1:port/?code=xxx）
-    if code.contains("code=") {
+    // 兼容整条回调 URL 粘贴（?code=xxx）
+    if let Some(c) = parse_callback(code.split('?').nth(1).unwrap_or("")).0 {
+        if !c.is_empty() {
+            code = c;
+        }
+    } else if code.contains("code=") {
         code = code
             .split("code=")
             .nth(1)
@@ -291,40 +287,31 @@ pub async fn ms_login_exchange(
     if code.is_empty() {
         return Ok(LoginPoll::Failed("授权码为空".into()));
     }
-    let redirect_uri = redirect_uri.trim();
-    if redirect_uri.is_empty() {
-        return Ok(LoginPoll::Failed("缺少回调地址".into()));
-    }
-    // 清理 loopback 会话，避免与手动流程互相干扰
-    *pending_slot().lock().unwrap() = None;
-    finish_login(&app, &code, redirect_uri).await
-}
 
-/// code → token → XBL → XSTS → MC 档案，落盘账户
-async fn finish_login(app: &AppHandle, code: &str, redirect_uri: &str) -> Result<LoginPoll, String> {
     let client = downloader::http_client();
-    let (ms_token, refresh_token, expires_in) = exchange_code(&client, code, redirect_uri).await?;
+    let (ms_token, refresh_token, expires_in) =
+        exchange_code(&client, &client_id(&app), &code).await?;
     let account = complete_ms_login(&client, &ms_token, &refresh_token, expires_in).await?;
-    let mut accounts = load_accounts(app);
+    let mut accounts = load_accounts(&app);
     accounts.retain(|a| a.uuid != account.uuid);
     accounts.push(account.clone());
-    save_accounts(app, &accounts)?;
+    save_accounts(&app, &accounts)?;
     Ok(LoginPoll::Done(account))
 }
 
 /// 授权码 → MSA access/refresh token
 async fn exchange_code(
     client: &reqwest::Client,
+    cid: &str,
     code: &str,
-    redirect_uri: &str,
 ) -> Result<(String, String, i64), String> {
     let resp = client
         .post(MS_TOKEN_URL)
         .form(&[
-            ("client_id", MS_CLIENT_ID),
+            ("client_id", cid),
             ("grant_type", "authorization_code"),
             ("code", code),
-            ("redirect_uri", redirect_uri),
+            ("redirect_uri", MS_REDIRECT_URI),
             ("scope", MS_SCOPE),
         ])
         .send()
@@ -477,7 +464,7 @@ pub async fn refresh_account(app: AppHandle, uuid: String) -> Result<Account, St
     let resp = client
         .post(MS_TOKEN_URL)
         .form(&[
-            ("client_id", MS_CLIENT_ID),
+            ("client_id", client_id(&app).as_str()),
             ("grant_type", "refresh_token"),
             ("refresh_token", account.refresh_token.as_str()),
             ("scope", MS_SCOPE),
@@ -538,4 +525,84 @@ pub fn offline_login(app: AppHandle, name: String) -> Result<Account, String> {
     accounts.push(account.clone());
     save_accounts(&app, &accounts)?;
     Ok(account)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_callback_extracts_code() {
+        let (code, err) = parse_callback("code=abc123&session=xyz");
+        assert_eq!(code.as_deref(), Some("abc123"));
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn parse_callback_ignores_other_params() {
+        let (code, err) = parse_callback("session=xyz&code=abc&scope=full");
+        assert_eq!(code.as_deref(), Some("abc"));
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn parse_callback_percent_decodes_code() {
+        let (code, _) = parse_callback("code=a%2Fb%2Bc%3D");
+        assert_eq!(code.as_deref(), Some("a/b+c="));
+    }
+
+    #[test]
+    fn parse_callback_reports_access_denied() {
+        let (code, err) = parse_callback("error=access_denied");
+        assert!(code.is_none());
+        assert_eq!(err.as_deref(), Some("用户拒绝了授权"));
+    }
+
+    #[test]
+    fn parse_callback_reports_other_error() {
+        let (_, err) = parse_callback("error=invalid_request");
+        assert!(err.unwrap().contains("invalid_request"));
+    }
+
+    #[test]
+    fn url_encode_escapes_scope() {
+        assert_eq!(
+            url_encode("XboxLive.signin offline_access"),
+            "XboxLive.signin%20offline_access"
+        );
+        assert_eq!(
+            url_encode("https://login.live.com/oauth20_desktop.srf"),
+            "https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf"
+        );
+    }
+
+    #[test]
+    fn percent_decode_roundtrip() {
+        let raw = "a/b+c=d e&f";
+        assert_eq!(percent_decode(&url_encode(raw)), raw);
+    }
+
+    /// 授权 URL 必须使用微软白名单内的回调地址，且不得出现 loopback
+    #[test]
+    fn authorize_url_uses_whitelisted_redirect() {
+        let url = format!(
+            "{MS_AUTHORIZE_URL}?client_id={}&scope={}&response_type=code&redirect_uri={}",
+            MS_CLIENT_ID,
+            url_encode(MS_SCOPE),
+            url_encode(MS_REDIRECT_URI),
+        );
+        assert!(url.contains(
+            "redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf"
+        ));
+        assert!(!url.contains("127.0.0.1"));
+        assert!(!url.contains("localhost"));
+    }
+
+    /// 手动粘贴整条回调 URL 时应能正确抽出 code
+    #[test]
+    fn manual_exchange_extracts_code_from_full_url() {
+        let url = "https://login.live.com/oauth20_desktop.srf?code=AbC%2FdE&session=zzz";
+        let (code, _) = parse_callback(url.split('?').nth(1).unwrap_or(""));
+        assert_eq!(code.as_deref(), Some("AbC/dE"));
+    }
 }

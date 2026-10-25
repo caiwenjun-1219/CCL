@@ -37,6 +37,7 @@ const defaultSettings: AppSettings = {
   java_path: "",
   window_width: null,
   window_height: null,
+  microsoft_client_id: "",
   game_folder: "",
   version_isolation: 4,
   custom_folders: [],

@@ -46,6 +46,11 @@ pub struct AppSettings {
     pub window_width: Option<u32>,
     #[serde(default)]
     pub window_height: Option<u32>,
+    /// 自定义微软应用 ID（Azure AD client id）
+    /// 留空 = 使用 Minecraft 官方启动器 client_id（仅支持手动复制授权码）
+    /// 填写自建应用（需勾选"允许公共客户端流"）= 走设备码流，体验最顺
+    #[serde(default)]
+    pub microsoft_client_id: String,
 
     // ---- PCL CE 风格：游戏目录与版本隔离 ----
     /// Minecraft 文件夹路径（.minecraft 根），空 = 使用 %APPDATA%\.minecraft
@@ -77,6 +82,7 @@ impl Default for AppSettings {
             java_path: String::new(),
             window_width: None,
             window_height: None,
+            microsoft_client_id: String::new(),
             game_folder: String::new(),
             version_isolation: default_isolation(),
             custom_folders: vec![],

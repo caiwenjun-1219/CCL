@@ -1,25 +1,35 @@
-import { useEffect, useState } from "react";
-import { UserPlus, Trash2, RefreshCw, ExternalLink, Loader2, LogIn, Wifi } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { UserPlus, Trash2, RefreshCw, ExternalLink, Loader2, LogIn, Wifi, Copy, Check } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useApp } from "../store/app";
 import { api, pollAccount, pollError, type LoginPollResult } from "../lib/tauri";
 
+type MsStart = {
+  mode: string;
+  user_code: string;
+  device_code: string;
+  verification_uri: string;
+  interval: number;
+  login_url: string;
+  expires_in: number;
+};
+
 export default function AccountsPage() {
   const { accounts, loadAccounts, showToast } = useApp();
-  const [msState, setMsState] = useState<{
-    login_url: string;
-    redirect_uri: string;
-  } | null>(null);
+  const [msState, setMsState] = useState<MsStart | null>(null);
   const [manualCode, setManualCode] = useState("");
   const [offlineName, setOfflineName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const startMsLogin = async () => {
     setBusy(true);
     try {
-      const info = await api.msLoginStart();
-      setMsState({ login_url: info.login_url, redirect_uri: info.redirect_uri });
-      openPath(info.login_url).catch(() => {});
+      const info = (await api.msLoginStart()) as MsStart;
+      setMsState(info);
+      // 设备码模式：直接打开验证页；授权码模式：打开授权页
+      const url = info.mode === "device" ? info.verification_uri : info.login_url;
+      if (url) openPath(url).catch(() => {});
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
@@ -31,7 +41,7 @@ export default function AccountsPage() {
     if (!msState) return;
     setBusy(true);
     try {
-      const res = (await api.msLoginExchange(manualCode.trim(), msState.redirect_uri)) as LoginPollResult;
+      const res = (await api.msLoginExchange(manualCode.trim())) as LoginPollResult;
       const acc = pollAccount(res);
       const err = pollError(res);
       if (acc) {
@@ -49,23 +59,37 @@ export default function AccountsPage() {
     }
   };
 
-  // 轮询登录状态（loopback 收到回调后自动完成）
+  const copyCode = async () => {
+    if (!msState?.user_code) return;
+    try {
+      await navigator.clipboard.writeText(msState.user_code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      showToast("复制失败，请手动复制验证码", "bad");
+    }
+  };
+
+  // 设备码模式：自动轮询
+  const pollRef = useRef<MsStart | null>(null);
+  pollRef.current = msState;
   useEffect(() => {
-    if (!msState) return;
+    if (!msState || msState.mode !== "device" || !msState.device_code) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
 
     const poll = async () => {
       if (stopped) return;
+      const cur = pollRef.current;
+      if (!cur || cur.mode !== "device") return;
       try {
-        const res = (await api.msLoginPoll()) as LoginPollResult;
+        const res = (await api.msLoginPoll(cur.device_code)) as LoginPollResult;
         if (stopped) return;
         const acc = pollAccount(res);
         const err = pollError(res);
         if (acc) {
           showToast(`登录成功：${acc.name}`);
           setMsState(null);
-          setManualCode("");
           loadAccounts();
           return;
         }
@@ -79,9 +103,9 @@ export default function AccountsPage() {
         setMsState(null);
         return;
       }
-      timer = setTimeout(poll, 2000);
+      timer = setTimeout(poll, Math.max(2, cur.interval || 5) * 1000);
     };
-    timer = setTimeout(poll, 2000);
+    timer = setTimeout(poll, Math.max(2, msState.interval || 5) * 1000);
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -128,42 +152,80 @@ export default function AccountsPage() {
           <h2 className="text-[13px] font-bold mb-3">添加账户</h2>
 
           {msState ? (
-            <div className="bg-ccl-bg border border-ccl-border rounded-lg p-4 text-center">
-              <Loader2 size={22} className="animate-spin mx-auto text-ccl-accent2 mb-2.5" />
-              <p className="text-[13px] mb-2">等待微软授权…</p>
-              <p className="text-[12px] text-ccl-muted mb-2">
-                浏览器已打开微软登录页，登录成功后会自动返回本启动器。
-              </p>
-              <button
-                className="btn btn-ghost !py-1 !px-3"
-                onClick={() => openPath(msState.login_url).catch(() => {})}
-              >
-                <ExternalLink size={12} /> 重新打开登录页
-              </button>
-              <button className="btn btn-ghost !py-1 !px-3 ml-2" onClick={() => setMsState(null)}>
-                取消
-              </button>
-
-              <div className="border-t border-ccl-border mt-3.5 pt-3.5 text-left">
-                <label className="text-[12px] text-ccl-muted block mb-1.5">
-                  浏览器未自动跳转？登录后将地址栏中的网址整条粘贴到这里：
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    className="field"
-                    placeholder="http://127.0.0.1:…/?code=…"
-                    value={manualCode}
-                    onChange={(e) => setManualCode(e.target.value)}
-                  />
+            <div className="bg-ccl-bg border border-ccl-border rounded-lg p-4">
+              {msState.mode === "device" ? (
+                /* ---- 设备码模式 ---- */
+                <div className="text-center">
+                  <Loader2 size={22} className="animate-spin mx-auto text-ccl-accent2 mb-2.5" />
+                  <p className="text-[13px] mb-2">请在浏览器中输入以下验证码</p>
+                  <div className="text-[26px] font-bold tracking-[0.2em] text-ccl-accent mb-1 select-all">
+                    {msState.user_code}
+                  </div>
                   <button
-                    className="btn btn-ghost shrink-0"
-                    onClick={submitManual}
-                    disabled={busy || !manualCode.trim()}
+                    className="btn btn-ghost !py-1 !px-2.5 mb-3"
+                    onClick={copyCode}
+                    title="复制验证码"
                   >
-                    提交
+                    {copied ? <Check size={12} /> : <Copy size={12} />}
+                    {copied ? "已复制" : "复制验证码"}
+                  </button>
+                  <p className="text-[12px] text-ccl-muted mb-3 leading-relaxed">
+                    浏览器已打开微软验证页，登录并输入验证码后会自动完成登录。
+                  </p>
+                  <button
+                    className="btn btn-ghost !py-1 !px-3"
+                    onClick={() => openPath(msState.verification_uri).catch(() => {})}
+                  >
+                    <ExternalLink size={12} /> 重新打开验证页
+                  </button>
+                  <button className="btn btn-ghost !py-1 !px-3 ml-2" onClick={() => setMsState(null)}>
+                    取消
                   </button>
                 </div>
-              </div>
+              ) : (
+                /* ---- 授权码模式（官方 client_id） ---- */
+                <div>
+                  <div className="text-center mb-3">
+                    <Loader2 size={22} className="animate-spin mx-auto text-ccl-accent2 mb-2.5" />
+                    <p className="text-[13px] mb-2">等待微软授权…</p>
+                    <p className="text-[12px] text-ccl-muted leading-relaxed">
+                      微软已关闭官方客户端的设备码流，请点击下方按钮打开授权页，
+                      登录后从地址栏复制整条网址粘贴到下方输入框。
+                    </p>
+                  </div>
+                  <div className="text-center mb-3.5">
+                    <button
+                      className="btn btn-primary !py-1 !px-3"
+                      onClick={() => openPath(msState.login_url).catch(() => {})}
+                    >
+                      <ExternalLink size={12} /> 打开微软授权页
+                    </button>
+                    <button className="btn btn-ghost !py-1 !px-3 ml-2" onClick={() => setMsState(null)}>
+                      取消
+                    </button>
+                  </div>
+                  <div className="border-t border-ccl-border pt-3.5">
+                    <label className="text-[12px] text-ccl-muted block mb-1.5">
+                      授权完成后，把浏览器地址栏中的整条网址（或授权码）粘贴到这里：
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        className="field"
+                        placeholder="https://login.live.com/…?code=…"
+                        value={manualCode}
+                        onChange={(e) => setManualCode(e.target.value)}
+                      />
+                      <button
+                        className="btn btn-ghost shrink-0"
+                        onClick={submitManual}
+                        disabled={busy || !manualCode.trim()}
+                      >
+                        提交
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <>
