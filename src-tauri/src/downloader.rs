@@ -345,9 +345,7 @@ pub fn urls_with_setting(orig: &str, prefer_mirror: bool) -> Vec<String> {
 }
 
 pub fn http_client() -> Client {
-    Client::builder()
-        .user_agent("CwjCraftLauncher/1.0 (+https://caiwenjun.top)")
-        .connect_timeout(Duration::from_secs(15))
-        .build()
-        .unwrap_or_default()
+    // 走全局代理配置（设置 → 网络代理）：国内直连 GitHub Release 只有 ~45 KB/s，
+    // 走 Clash mixed 端口可到 ~190 KB/s
+    crate::proxy::client()
 }

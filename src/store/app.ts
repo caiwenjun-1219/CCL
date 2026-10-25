@@ -41,6 +41,7 @@ const defaultSettings: AppSettings = {
   game_folder: "",
   version_isolation: 4,
   custom_folders: [],
+  proxy: "auto",
 };
 
 export const useApp = create<AppState>((set, get) => ({

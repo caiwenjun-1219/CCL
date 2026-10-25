@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { UserPlus, Trash2, RefreshCw, ExternalLink, Loader2, LogIn, Wifi, Copy, Check } from "lucide-react";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useApp } from "../store/app";
 import { api, pollAccount, pollError, type LoginPollResult } from "../lib/tauri";
 
@@ -28,8 +28,12 @@ export default function AccountsPage() {
       const info = (await api.msLoginStart()) as MsStart;
       setMsState(info);
       // 设备码模式：直接打开验证页；授权码模式：打开授权页
+      // 注意必须用 openUrl（按 URL 协议交给系统默认浏览器），
+      // openPath 是按文件路径处理的，喂 URL 不会打开浏览器
       const url = info.mode === "device" ? info.verification_uri : info.login_url;
-      if (url) openPath(url).catch(() => {});
+      if (url) {
+        openUrl(url).catch((e) => showToast(`打开登录页失败：${e}`, "bad"));
+      }
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
@@ -174,7 +178,7 @@ export default function AccountsPage() {
                   </p>
                   <button
                     className="btn btn-ghost !py-1 !px-3"
-                    onClick={() => openPath(msState.verification_uri).catch(() => {})}
+                    onClick={() => openUrl(msState.verification_uri).catch((e) => showToast(`打开验证页失败：${e}`, "bad"))}
                   >
                     <ExternalLink size={12} /> 重新打开验证页
                   </button>
@@ -196,7 +200,7 @@ export default function AccountsPage() {
                   <div className="text-center mb-3.5">
                     <button
                       className="btn btn-primary !py-1 !px-3"
-                      onClick={() => openPath(msState.login_url).catch(() => {})}
+                      onClick={() => openUrl(msState.login_url).catch((e) => showToast(`打开授权页失败：${e}`, "bad"))}
                     >
                       <ExternalLink size={12} /> 打开微软授权页
                     </button>

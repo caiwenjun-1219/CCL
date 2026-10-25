@@ -11,6 +11,7 @@ import {
   HardDrive,
   Layers,
   Trash2,
+  Globe,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useApp } from "../store/app";
@@ -232,6 +233,86 @@ function GameFolderPanel() {
   );
 }
 
+/**
+ * 网络代理设置
+ *
+ * 直连 GitHub Release 只有 ~45 KB/s（190 MB 的 JDK 要 70 分钟），
+ * 走 Clash 的 mixed 端口能到 ~190 KB/s。所以这里提供三档：
+ * 自动（读系统代理）/ 直连 / 自定义。
+ */
+function ProxyPanel() {
+  const { settings, patchSettings, showToast } = useApp();
+  const [detected, setDetected] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [custom, setCustom] = useState(
+    settings.proxy && settings.proxy !== "auto" ? settings.proxy : ""
+  );
+
+  const raw = settings.proxy ?? "";
+  const mode = raw === "auto" ? "auto" : raw === "" ? "none" : "custom";
+
+  useEffect(() => {
+    api
+      .proxyDetect()
+      .then(setDetected)
+      .catch(() => setDetected(null));
+  }, []);
+
+  const apply = (m: string, customAddr: string) => {
+    const value = m === "auto" ? "auto" : m === "none" ? "" : customAddr.trim();
+    patchSettings({ proxy: value });
+  };
+
+  const test = async () => {
+    setTesting(true);
+    try {
+      const msg = await api.proxyTest(null);
+      showToast(msg);
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div>
+      <Row
+        label="网络代理"
+        desc="用于下载 JDK、模组与游戏资源。国内直连 GitHub 较慢时建议开启代理；系统代理未运行时会自动回退直连。"
+      >
+        <select
+          className="field !w-[220px]"
+          value={mode}
+          onChange={(e) => apply(e.target.value, custom)}
+        >
+          <option value="auto">自动（跟随系统代理）</option>
+          <option value="none">直连（不使用代理）</option>
+          <option value="custom">自定义地址</option>
+        </select>
+      </Row>
+      {mode === "custom" && (
+        <Row label="代理地址" desc="格式 http://主机:端口 或 socks5://主机:端口，例如 http://127.0.0.1:7897">
+          <input
+            className="field !w-[300px]"
+            placeholder="http://127.0.0.1:7897"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            onBlur={(e) => apply("custom", e.target.value)}
+          />
+        </Row>
+      )}
+      <Row label="代理状态" desc={detected ? `检测到系统代理：${detected}` : "未检测到系统代理（将直连）"}>
+        <div className="flex items-center gap-2">
+          <button className="btn !h-[30px]" onClick={test} disabled={testing}>
+            {testing ? "测试中…" : "测试连通性"}
+          </button>
+        </div>
+      </Row>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [params] = useSearchParams();
   const tab = params.get("tab") || "launch";
@@ -398,6 +479,9 @@ export default function SettingsPage() {
       {/* -------------------------------------------------- 系统 */}
       {tab === "system" && (
         <div className="mt-5">
+          <Section icon={<Globe size={13} />} title="网络" />
+          <ProxyPanel />
+          <Section icon={<HardDrive size={13} />} title="下载源与凭据" />
           <Row label="资源下载源" desc="任何源失败都会自动逐级回退：首选 → 备用镜像 → 官方源。">
             <select
               className="field !w-[300px]"

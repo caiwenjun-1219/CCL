@@ -21,6 +21,8 @@ export interface AppSettings {
   version_isolation: number;
   /** 自定义文件夹列表，格式「名称>路径」 */
   custom_folders: string[];
+  /** 网络代理："" = 直连；"auto" = 自动读系统代理；否则 "http://host:port" / "socks5://host:port" */
+  proxy: string;
 }
 
 /** 可选的 Minecraft 文件夹 */
@@ -462,6 +464,12 @@ export const api = {
   checkCloudUpdate: () => invoke<UpdateInfo>("check_cloud_update"),
   installCloudUpdate: (downloadUrl: string, sha256: string) =>
     invoke("install_cloud_update", { downloadUrl, sha256 }),
+
+  // 网络代理
+  /** 探测到的系统代理地址（无则 null） */
+  proxyDetect: () => invoke<string | null>("proxy_detect"),
+  /** 走当前代理配置做一次连通性测试，返回耗时与状态描述 */
+  proxyTest: (url?: string | null) => invoke<string>("proxy_test", { url: url ?? null }),
 };
 
 // ---------------------------------------------------------------- 事件订阅

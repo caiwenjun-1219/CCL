@@ -60,9 +60,18 @@ pub struct AppSettings {
     /// 0 关闭 / 1 仅可装模组的实例 / 2 仅非正式版 / 3 两者 / 4 全部（默认）
     #[serde(default = "default_isolation")]
     pub version_isolation: u32,
-    /// 自定义 Minecraft 文件夹列表，格式「名称>绝对路径」
+    /// 自定义 Microsoft 文件夹列表，格式「名称>绝对路径」
     #[serde(default)]
     pub custom_folders: Vec<String>,
+    /// 网络代理："" = 不使用；"auto" = 自动读系统代理；否则形如
+    /// "http://127.0.0.1:7897" 或 "socks5://127.0.0.1:7897"
+    #[serde(default = "default_proxy")]
+    pub proxy: String,
+}
+
+/// 默认使用「自动」：读取系统代理设置（Clash 等），未开启则等价于直连
+fn default_proxy() -> String {
+    "auto".to_string()
 }
 
 /// PCL CE 默认值为 4：隔离所有实例
@@ -86,6 +95,7 @@ impl Default for AppSettings {
             game_folder: String::new(),
             version_isolation: default_isolation(),
             custom_folders: vec![],
+            proxy: default_proxy(),
         }
     }
 }
@@ -132,5 +142,8 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    save(&app, &settings)
+    save(&app, &settings)?;
+    // 保存后热更新全局代理，立即生效
+    crate::proxy::set_proxy(&settings.proxy);
+    Ok(())
 }

@@ -13,6 +13,7 @@ mod modpack;
 mod modrinth;
 mod paths;
 mod protocol;
+mod proxy;
 mod resources;
 mod settings;
 mod updater;
@@ -113,7 +114,16 @@ pub fn run() {
             updater::app_version,
             updater::check_cloud_update,
             updater::install_cloud_update,
+            // 网络代理
+            proxy::proxy_detect,
+            proxy::proxy_test,
         ])
+        .setup(|app| {
+            // 启动时按设置初始化全局代理（影响所有 HTTP 请求）
+            let s = settings::load(app.handle());
+            proxy::set_proxy(&s.proxy);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running CCL");
 }
