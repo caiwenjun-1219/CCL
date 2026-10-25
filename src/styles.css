@@ -614,17 +614,32 @@ select.field {
   bottom: 26px;
   transform: translateX(-50%);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  max-width: 70%;
+  /* 用 min() 同时约束视口宽度与绝对上限；原来只写 70%，
+     长错误消息会把 flex 子项挤成极窄一条，文字竖着叠在一起 */
+  width: max-content;
+  max-width: min(70vw, 560px);
   padding: 8px 16px;
   border-radius: 3px;
   background: rgba(52, 61, 74, 0.95);
   color: #fff;
   font-size: 13px;
+  line-height: 1.5;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.24);
   z-index: 60;
   animation: pcl-toast-in 0.18s ease-out;
+}
+/* 错误消息要完整可读：允许换行，而不是 truncate 成一个省略号 */
+.pcl-toast > span {
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.pcl-toast > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 .pcl-toast[data-kind="bad"] {
   background: rgba(206, 33, 17, 0.95);

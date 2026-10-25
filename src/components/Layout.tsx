@@ -325,7 +325,8 @@ function Toast() {
   return (
     <div className="pcl-toast" data-kind={toast.kind === "bad" ? "bad" : "ok"}>
       {toast.kind === "ok" ? <Check size={14} /> : <X size={14} />}
-      <span className="truncate">{toast.text}</span>
+      {/* 不用 truncate：错误消息要完整显示，挤压后文字会竖着叠成一团 */}
+      <span>{toast.text}</span>
     </div>
   );
 }
