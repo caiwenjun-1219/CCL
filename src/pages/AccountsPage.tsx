@@ -2,9 +2,7 @@ import { useEffect, useState } from "react";
 import { UserPlus, Trash2, RefreshCw, ExternalLink, Loader2, LogIn, Wifi } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useApp } from "../store/app";
-import { api, type Account } from "../lib/tauri";
-
-type PollResult = { Pending?: never } | { Done: Account } | { Failed: string };
+import { api, pollAccount, pollError, type LoginPollResult } from "../lib/tauri";
 
 export default function AccountsPage() {
   const { accounts, loadAccounts, showToast } = useApp();
@@ -33,14 +31,16 @@ export default function AccountsPage() {
     if (!msState) return;
     setBusy(true);
     try {
-      const res = (await api.msLoginExchange(manualCode.trim(), msState.redirect_uri)) as PollResult;
-      if ("Done" in res && res.Done) {
-        showToast(`登录成功：${res.Done.name}`);
+      const res = (await api.msLoginExchange(manualCode.trim(), msState.redirect_uri)) as LoginPollResult;
+      const acc = pollAccount(res);
+      const err = pollError(res);
+      if (acc) {
+        showToast(`登录成功：${acc.name}`);
         setMsState(null);
         setManualCode("");
         loadAccounts();
-      } else if ("Failed" in res && res.Failed) {
-        showToast(res.Failed, "bad");
+      } else if (err) {
+        showToast(err, "bad");
       }
     } catch (e) {
       showToast(String(e), "bad");
@@ -58,17 +58,19 @@ export default function AccountsPage() {
     const poll = async () => {
       if (stopped) return;
       try {
-        const res = (await api.msLoginPoll()) as PollResult;
+        const res = (await api.msLoginPoll()) as LoginPollResult;
         if (stopped) return;
-        if ("Done" in res && res.Done) {
-          showToast(`登录成功：${res.Done.name}`);
+        const acc = pollAccount(res);
+        const err = pollError(res);
+        if (acc) {
+          showToast(`登录成功：${acc.name}`);
           setMsState(null);
           setManualCode("");
           loadAccounts();
           return;
         }
-        if ("Failed" in res && res.Failed) {
-          showToast(res.Failed, "bad");
+        if (err) {
+          showToast(err, "bad");
           setMsState(null);
           return;
         }

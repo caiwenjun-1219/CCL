@@ -120,6 +120,23 @@ export interface Account {
   expires_at: number;
 }
 
+/**
+ * Rust 端 `LoginPoll` 枚举的 JSON 形状。
+ * 注意：Pending 是单元变体，serde 会序列化成**字符串** "Pending"（不是对象），
+ * 所以判断时必须先确认是对象，不能直接用 `"Done" in res`（对字符串用 in 会抛 TypeError）。
+ */
+export type LoginPollResult = "Pending" | { Done: Account } | { Failed: string };
+
+/** 登录轮询结果 → 成功账户（非成功时返回 null） */
+export function pollAccount(r: LoginPollResult): Account | null {
+  return typeof r === "object" && r !== null && "Done" in r ? r.Done : null;
+}
+
+/** 登录轮询结果 → 失败原因（未失败时返回 null） */
+export function pollError(r: LoginPollResult): string | null {
+  return typeof r === "object" && r !== null && "Failed" in r ? r.Failed : null;
+}
+
 export interface UpdateInfo {
   current_version: string;
   latest_version: string;
@@ -367,10 +384,9 @@ export const api = {
       redirect_uri: string;
       expires_in: number;
     }>("ms_login_start"),
-  msLoginPoll: () =>
-    invoke<{ Pending?: never } | { Done: Account } | { Failed: string }>("ms_login_poll"),
+  msLoginPoll: () => invoke<LoginPollResult>("ms_login_poll"),
   msLoginExchange: (code: string, redirectUri: string) =>
-    invoke<{ Pending?: never } | { Done: Account } | { Failed: string }>("ms_login_exchange", {
+    invoke<LoginPollResult>("ms_login_exchange", {
       code,
       redirectUri,
     }),
