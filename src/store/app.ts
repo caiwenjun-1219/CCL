@@ -33,6 +33,7 @@ const defaultSettings: AppSettings = {
   java_path: "",
   window_width: null,
   window_height: null,
+  proxy: "auto",
 };
 
 export const useApp = create<AppState>((set, get) => ({

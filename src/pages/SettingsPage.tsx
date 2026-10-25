@@ -119,6 +119,44 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {/* 网络代理 */}
+      <div className="card mb-4">
+        <h2 className="text-[13px] font-bold mb-3">网络</h2>
+        <label className="text-[12px] text-ccl-muted block mb-1.5">网络代理</label>
+        <select
+          className="field mb-3"
+          value={draft.proxy === 'auto' ? 'auto' : draft.proxy === '' ? 'none' : 'custom'}
+          onChange={(e) => {
+            const v = e.target.value;
+            setDraft({
+              ...draft,
+              proxy: v === 'auto' ? 'auto' : v === 'none' ? '' : draft.proxy && draft.proxy !== 'auto' ? draft.proxy : '',
+            });
+          }}
+        >
+          <option value="auto">自动（跟随系统代理）</option>
+          <option value="none">直连（不使用代理）</option>
+          <option value="custom">自定义地址</option>
+        </select>
+        {draft.proxy !== 'auto' && draft.proxy !== '' && (
+          <input
+            className="field mb-3"
+            placeholder="http://127.0.0.1:7897"
+            value={draft.proxy}
+            onChange={(e) => setDraft({ ...draft, proxy: e.target.value })}
+          />
+        )}
+        <div className="flex items-center gap-2">
+          <button className="btn" onClick={async () => {
+            try {
+              const msg = await api.proxyTest(null);
+              showToast(msg);
+            } catch (e) { showToast(String(e), 'bad'); }
+          }}>测试连通性</button>
+          <span className="text-[11px] text-ccl-muted">国内直连 GitHub 较慢时建议开启代理</span>
+        </div>
+      </div>
+
       {/* 下载 */}
       <div className="card mb-4">
         <h2 className="text-[13px] font-bold mb-3">下载</h2>
