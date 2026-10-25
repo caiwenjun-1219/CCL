@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { UserPlus, Trash2, RefreshCw, ExternalLink, Loader2, LogIn, Wifi } from "lucide-react";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useApp } from "../store/app";
 import { api, pollAccount, pollError, type LoginPollResult } from "../lib/tauri";
 
@@ -19,7 +19,7 @@ export default function AccountsPage() {
     try {
       const info = await api.msLoginStart();
       setMsState({ login_url: info.login_url, redirect_uri: info.redirect_uri });
-      openPath(info.login_url).catch(() => {});
+      openUrl(info.login_url).catch(() => {});
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
@@ -136,7 +136,7 @@ export default function AccountsPage() {
               </p>
               <button
                 className="btn btn-ghost !py-1 !px-3"
-                onClick={() => openPath(msState.login_url).catch(() => {})}
+                onClick={() => openUrl(msState.login_url).catch(() => {})}
               >
                 <ExternalLink size={12} /> 重新打开登录页
               </button>

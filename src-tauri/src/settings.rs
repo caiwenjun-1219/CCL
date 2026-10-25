@@ -46,6 +46,15 @@ pub struct AppSettings {
     pub window_width: Option<u32>,
     #[serde(default)]
     pub window_height: Option<u32>,
+    /// 网络代理："" = 不使用；"auto" = 自动读系统代理；否则形如
+    /// "http://127.0.0.1:7897" 或 "socks5://127.0.0.1:7897"
+    #[serde(default = "default_proxy")]
+    pub proxy: String,
+}
+
+/// 默认使用「自动」：读取系统代理设置（Clash 等），未开启则等价于直连
+fn default_proxy() -> String {
+    "auto".to_string()
 }
 
 impl Default for AppSettings {
@@ -60,6 +69,7 @@ impl Default for AppSettings {
             java_path: String::new(),
             window_width: None,
             window_height: None,
+            proxy: default_proxy(),
         }
     }
 }
@@ -106,5 +116,8 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    save(&app, &settings)
+    save(&app, &settings)?;
+    // 保存后热更新全局代理，立即生效
+    crate::proxy::set_proxy(&settings.proxy);
+    Ok(())
 }

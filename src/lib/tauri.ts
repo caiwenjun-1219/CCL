@@ -13,6 +13,8 @@ export interface AppSettings {
   java_path: string;
   window_width: number | null;
   window_height: number | null;
+  /** 网络代理："" = 直连；"auto" = 自动读系统代理 */
+  proxy: string;
 }
 
 export interface Instance {
@@ -273,6 +275,12 @@ export const api = {
   checkCloudUpdate: () => invoke<UpdateInfo>("check_cloud_update"),
   installCloudUpdate: (downloadUrl: string, sha256: string) =>
     invoke("install_cloud_update", { downloadUrl, sha256 }),
+
+  // 网络代理
+  /** 探测到的系统代理地址（无则 null） */
+  proxyDetect: () => invoke<string | null>("proxy_detect"),
+  /** 走当前代理配置做一次连通性测试 */
+  proxyTest: (url?: string | null) => invoke<string>("proxy_test", { url: url ?? null }),
 };
 
 // ---------------------------------------------------------------- 事件订阅
