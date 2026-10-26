@@ -40,6 +40,7 @@ pub fn run() {
             java::scan_javas,
             java::download_java,
             java::resolve_java,
+            java::java_env,
             // Minecraft 版本
             minecraft::mc_version_manifest,
             minecraft::mc_local_versions,

@@ -39,6 +39,9 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 url = "2"
 percent-encoding = "2"
+# Android JRE 解包：xz + tar 纯 Rust 实现（不依赖 liblzma / NDK C 工具链）
+lzma-rs = "0.3"
+tar = "0.4"
 
 [profile.release]
 codegen-units = 16

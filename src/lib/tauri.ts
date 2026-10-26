@@ -115,6 +115,14 @@ export interface JavaInfo {
   managed: boolean;
 }
 
+/** Java 运行环境信息（桌面 / Android 由后端区分） */
+export interface JavaEnv {
+  platform: "desktop" | "android";
+  supported_majors: number[];
+  source: string;
+  is_android_jre: boolean;
+}
+
 export interface Account {
   uuid: string;
   name: string;
@@ -251,6 +259,7 @@ export const api = {
   downloadJava: (major: number) => invoke<JavaInfo>("download_java", { major }),
   resolveJava: (mcVersion: string) =>
     invoke<JavaInfo>("resolve_java", { mcVersion }),
+  javaEnv: () => invoke<JavaEnv>("java_env"),
 
   // Minecraft 版本
   versionManifest: () => invoke<ManifestEntry[]>("mc_version_manifest"),
