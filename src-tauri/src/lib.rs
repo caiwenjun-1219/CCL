@@ -28,6 +28,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Android 存储权限（MANAGE_EXTERNAL_STORAGE）申请与检测；桌面端为空操作
+        .plugin(ccl_android::init())
         // ccl:// 自定义协议：为前端提供本地文件服务（实例截图/数据目录文件），
         // 支持 Range 与 CORS，详见 protocol.rs
         .register_uri_scheme_protocol("ccl", protocol::handle)

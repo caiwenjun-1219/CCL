@@ -100,11 +100,46 @@ impl Default for AppSettings {
     }
 }
 
-/// 应用数据根目录: %APPDATA%/com.caiwenjun.ccl
+/// 应用数据根目录
+///
+/// - 桌面：%APPDATA%/com.caiwenjun.ccl（或 macOS/Linux 对应目录）
+/// - Android：优先使用共享外部存储的 `/<外部存储根>/CCL`（需要「所有文件访问」权限，
+///   便于用户在文件管理器里直接管理 Java 与游戏）；若权限未授予或创建失败，则退回
+///   应用私有目录（/Android/data/com.caiwenjun.ccl），此时下载仍可用但不可在外部浏览。
 pub fn data_dir(app: &AppHandle) -> PathBuf {
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(ad) = app.path().app_data_dir() {
+            if let Some(root) = shared_external_root(&ad) {
+                let ccl = root.join("CCL");
+                let _ = std::fs::create_dir_all(&ccl);
+                if std::fs::metadata(&ccl).map(|m| m.is_dir()).unwrap_or(false) {
+                    return ccl;
+                }
+            }
+        }
+    }
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Android：从 app_data_dir（.../Android/data/<pkg>/files）推导共享外部存储根（截到 "Android" 之前）
+#[cfg(target_os = "android")]
+fn shared_external_root(app_data: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut root = std::path::PathBuf::new();
+    for comp in app_data.components() {
+        if matches!(comp, Component::Normal(s) if s == "Android") {
+            break;
+        }
+        root.push(comp);
+    }
+    if root.as_os_str().is_empty() {
+        None
+    } else {
+        Some(root)
+    }
 }
 
 pub fn settings_path(app: &AppHandle) -> PathBuf {

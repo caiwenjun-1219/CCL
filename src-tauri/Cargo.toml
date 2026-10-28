@@ -20,6 +20,8 @@ tauri = { version = "2", features = ["custom-protocol"] }
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# 本地插件：Android 存储权限（MANAGE_EXTERNAL_STORAGE）申请与检测
+ccl-android = { path = "plugins/ccl-android" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

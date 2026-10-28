@@ -441,6 +441,7 @@ name = "ccl"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "ccl-android",
  "chrono",
  "dirs 5.0.1",
  "flate2",
@@ -464,6 +465,17 @@ dependencies = [
  "url",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "ccl-android"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

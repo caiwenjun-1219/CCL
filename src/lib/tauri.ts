@@ -261,6 +261,12 @@ export const api = {
     invoke<JavaInfo>("resolve_java", { mcVersion }),
   javaEnv: () => invoke<JavaEnv>("java_env"),
 
+  // Android 存储权限（MANAGE_EXTERNAL_STORAGE）：检测与申请
+  checkStoragePermission: () =>
+    invoke<{ granted: boolean }>("plugin:ccl-android|check_storage_permission"),
+  requestStoragePermission: () =>
+    invoke<{ granted: boolean }>("plugin:ccl-android|request_storage_permission"),
+
   // Minecraft 版本
   versionManifest: () => invoke<ManifestEntry[]>("mc_version_manifest"),
   testVersion: (versionId: string) =>
@@ -318,7 +324,7 @@ export const api = {
       name?: string;
       max_memory?: number;
       installed_version_id?: string;
-      loader_version?: string;
+      loader_version?: string | null;
       loader?: string;
       min_memory?: number;
       java_path?: string;

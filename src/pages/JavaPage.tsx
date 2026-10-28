@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Coffee, Download, RefreshCw, Loader2, Check, Cpu, Smartphone } from "lucide-react";
+import { Coffee, Download, RefreshCw, Loader2, Check, Cpu, Smartphone, ShieldCheck, AlertTriangle } from "lucide-react";
 import { useApp } from "../store/app";
 import { api, type JavaInfo, type JavaEnv } from "../lib/tauri";
+import { isMobile } from "../lib/env";
 
 /** 桌面端（Adoptium）可下载的 Java 主版本 */
 const DESKTOP_VERSIONS = [8, 11, 17, 21, 25];
@@ -21,6 +22,8 @@ export default function JavaPage() {
   const [javas, setJavas] = useState<JavaInfo[]>([]);
   const [env, setEnv] = useState<JavaEnv | null>(null);
   const [downloading, setDownloading] = useState<number | null>(null);
+  const [permGranted, setPermGranted] = useState(true);
+  const [permBusy, setPermBusy] = useState(false);
 
   const refresh = async () => {
     try {
@@ -34,7 +37,27 @@ export default function JavaPage() {
 
   useEffect(() => {
     refresh();
+    // 安卓端检测存储权限（MANAGE_EXTERNAL_STORAGE）
+    if (isMobile()) {
+      api
+        .checkStoragePermission()
+        .then((r) => setPermGranted(r.granted))
+        .catch(() => setPermGranted(true));
+    }
   }, []);
+
+  const grantPerm = async () => {
+    setPermBusy(true);
+    try {
+      const r = await api.requestStoragePermission();
+      setPermGranted(r.granted);
+      if (!r.granted) showToast("未授予存储权限：Java 与游戏将只能存放在应用私有目录", "bad");
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setPermBusy(false);
+    }
+  };
 
   const download = async (major: number) => {
     setDownloading(major);
@@ -64,6 +87,33 @@ export default function JavaPage() {
           <RefreshCw size={13} /> 重新扫描
         </button>
       </div>
+
+      {isMobile() && !permGranted && (
+        <div className="card mb-5 border-ccl-warn/40 bg-ccl-warn/5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} className="text-ccl-warn mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <div className="text-[13px] font-bold mb-1">需要存储权限</div>
+              <p className="text-[12px] text-ccl-muted leading-relaxed mb-3">
+                Android 11+ 需要「所有文件访问」权限，才能把 Java 与游戏下载到共享存储，
+                方便你在文件管理器里直接管理。未授予时也能使用，但文件仅存于应用私有目录。
+              </p>
+              <button
+                className="btn btn-primary !py-1.5 !px-4"
+                disabled={permBusy}
+                onClick={grantPerm}
+              >
+                {permBusy ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <ShieldCheck size={14} />
+                )}
+                授予存储权限
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card mb-5">
         <div className="flex items-center gap-2 mb-3">

@@ -1,0 +1,20 @@
+[package]
+name = "ccl-android"
+version = "0.1.0"
+edition = "2021"
+links = "ccl-android"
+description = "CCL Android 原生能力：存储权限（MANAGE_EXTERNAL_STORAGE）申请与检测"
+license = "MIT"
+
+[lib]
+name = "ccl_android"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

@@ -21,6 +21,9 @@ import {
   Trash2,
   Coffee,
   HardDrive,
+  Download,
+  Check,
+  AlertCircle,
 } from "lucide-react";
 import { useApp } from "../store/app";
 import { isMobile, MOBILE_LAUNCH_HINT } from "../lib/env";
@@ -28,6 +31,7 @@ import {
   api,
   cclUrl,
   fmtSize,
+  onInstallProgress,
   type Instance,
   type InstancePaths,
   type JavaInfo,
@@ -43,6 +47,7 @@ import {
 const TABS = [
   { key: "overview", label: "概览", icon: LayoutGrid },
   { key: "settings", label: "游戏设置", icon: Settings2 },
+  { key: "version", label: "版本", icon: Download },
   { key: "mods", label: "模组", icon: Puzzle },
   { key: "saves", label: "存档", icon: Save },
   { key: "resourcepacks", label: "资源包", icon: Package },
@@ -205,6 +210,9 @@ export default function InstanceDetailPage() {
           {tab === "overview" && <Overview inst={inst} onGoTab={(k) => setParams({ tab: k })} />}
           {tab === "settings" && (
             <SettingsPanel key={inst.id} inst={inst} onSaved={() => loadInstances()} />
+          )}
+          {tab === "version" && (
+            <VersionPanel key={inst.id} inst={inst} onSaved={() => loadInstances()} />
           )}
           {tab === "mods" && (
             <div className="space-y-3">
@@ -383,6 +391,222 @@ function Overview({ inst, onGoTab }: { inst: Instance; onGoTab: (k: TabKey) => v
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------- 版本与模组加载器 */
+
+function VersionPanel({ inst, onSaved }: { inst: Instance; onSaved: () => void }) {
+  const { showToast } = useApp();
+  const [loaderKind, setLoaderKind] = useState(inst.loader || "vanilla");
+  const [loaderVersions, setLoaderVersions] = useState<string[]>([]);
+  const [loaderVersion, setLoaderVersion] = useState("");
+  const [loadingLoader, setLoadingLoader] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [busyGame, setBusyGame] = useState(false);
+  const [progress, setProgress] = useState<{ phase: string; done: number; total: number } | null>(null);
+
+  const mcVersion = inst.minecraft_version;
+  const installed = !!inst.installed_version_id;
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    onInstallProgress((p) => setProgress(p)).then((f) => (un = f));
+    return () => un?.();
+  }, []);
+
+  useEffect(() => {
+    if (loaderKind === "vanilla") {
+      setLoaderVersions([]);
+      setLoaderVersion("");
+      return;
+    }
+    setLoadingLoader(true);
+    const cmd =
+      loaderKind === "forge" || loaderKind === "neoforge"
+        ? api.forgeVersions(loaderKind, mcVersion)
+        : api.loaderVersions(loaderKind, mcVersion);
+    cmd
+      .then((list) => {
+        setLoaderVersions(list);
+        setLoaderVersion(list[0] || "");
+      })
+      .catch((e) => showToast(`${LOADER_LABEL[loaderKind] || loaderKind} 版本列表获取失败: ${e}`, "bad"))
+      .finally(() => setLoadingLoader(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaderKind, mcVersion]);
+
+  const mcRoot = () => api.getMcFolder();
+
+  const installGame = async () => {
+    setBusyGame(true);
+    setProgress({ phase: "安装游戏本体", done: 0, total: 0 });
+    try {
+      await api.installVersion(await mcRoot(), mcVersion);
+      await api.updateInstance(inst.id, { installed_version_id: mcVersion });
+      onSaved();
+      showToast(`已安装 ${mcVersion} 游戏本体`);
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setBusyGame(false);
+      setProgress(null);
+    }
+  };
+
+  const applyLoader = async () => {
+    if (loaderKind !== "vanilla" && !loaderVersion) {
+      showToast("请先选择加载器版本", "bad");
+      return;
+    }
+    setInstalling(true);
+    setProgress({ phase: "准备安装", done: 0, total: 0 });
+    try {
+      const root = await mcRoot();
+      let installedId = mcVersion;
+      if (loaderKind === "fabric" || loaderKind === "quilt") {
+        installedId = await api.installLoader(root, mcVersion, loaderKind, loaderVersion);
+      } else if (loaderKind === "forge" || loaderKind === "neoforge") {
+        installedId = await api.installForge(root, mcVersion, loaderKind, loaderVersion);
+      } else {
+        await api.installVersion(root, mcVersion);
+        installedId = mcVersion;
+      }
+      await api.updateInstance(inst.id, {
+        installed_version_id: installedId,
+        loader: loaderKind,
+        loader_version: loaderKind === "vanilla" ? null : loaderVersion,
+      });
+      onSaved();
+      showToast(
+        loaderKind === "vanilla"
+          ? "已设为原版（纯净游戏）"
+          : `${LOADER_LABEL[loaderKind]} ${loaderVersion} 安装完成`
+      );
+    } catch (e) {
+      showToast(String(e), "bad");
+    } finally {
+      setInstalling(false);
+      setProgress(null);
+    }
+  };
+
+  return (
+    <div className="space-y-3.5">
+      {/* 安装状态 */}
+      <div
+        className={`rounded-[4px] border px-4 py-3 text-[12.5px] flex items-center gap-2 ${
+          installed
+            ? "border-ccl-brush6 bg-ccl-brush8 text-ccl-brush2"
+            : "border-[#f0dcb4] bg-[#fdf8ea] text-[#8a6420]"
+        }`}
+      >
+        {installed ? (
+          <>
+            <Check size={14} className="shrink-0" />
+            <span>
+              已安装：<b>{inst.installed_version_id}</b>（
+              {LOADER_LABEL[inst.loader] || inst.loader}
+              {inst.loader_version ? ` ${inst.loader_version}` : ""}）
+            </span>
+          </>
+        ) : (
+          <>
+            <AlertCircle size={14} className="shrink-0" />
+            <span>该实例尚未安装游戏，请先安装下方游戏本体或加载器。</span>
+          </>
+        )}
+      </div>
+
+      {/* 游戏本体 */}
+      <Section title="游戏版本">
+        <Row label="Minecraft">
+          <span className="text-[12.5px] text-ccl-brush1">{mcVersion}</span>
+        </Row>
+        <Row label="安装状态">
+          {installed ? <span className="tag tag-green">已安装</span> : <span className="tag tag-orange">待安装</span>}
+        </Row>
+        {!installed && (
+          <div className="pt-1">
+            <button className="btn btn-primary !py-1 !px-3" disabled={busyGame} onClick={installGame}>
+              {busyGame ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              安装游戏本体
+            </button>
+          </div>
+        )}
+      </Section>
+
+      {/* 模组加载器 */}
+      <Section title="模组加载器" icon={<Puzzle size={13} />}>
+        <Row label="当前加载器">
+          <span className="text-[12.5px] text-ccl-brush1">
+            {LOADER_LABEL[inst.loader] || inst.loader}
+            {inst.loader_version ? ` ${inst.loader_version}` : ""}
+          </span>
+        </Row>
+        <Row label="切换为">
+          <div className="flex flex-wrap items-center gap-2">
+            {["vanilla", "fabric", "quilt", "neoforge", "forge"].map((k) => (
+              <button
+                key={k}
+                className={`btn !py-1.5 !px-3 ${loaderKind === k ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setLoaderKind(k)}
+              >
+                {k === "vanilla" ? "原版" : LOADER_LABEL[k]}
+              </button>
+            ))}
+            {loadingLoader ? (
+              <span className="text-[12px] text-ccl-muted flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" /> 正在获取 {LOADER_LABEL[loaderKind]} 版本…
+              </span>
+            ) : (
+              loaderKind !== "vanilla" && (
+                <select
+                  className="field !w-44"
+                  value={loaderVersion}
+                  onChange={(e) => setLoaderVersion(e.target.value)}
+                  disabled={loaderVersions.length === 0}
+                >
+                  {loaderVersions.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              )
+            )}
+          </div>
+        </Row>
+        <div className="pt-1 flex items-center gap-2">
+          <button
+            className="btn btn-primary !py-1 !px-3"
+            disabled={installing || busyGame || (loaderKind !== "vanilla" && !loaderVersion)}
+            onClick={applyLoader}
+          >
+            {installing ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {installed ? "安装 / 切换" : "安装"}
+          </button>
+          <span className="text-[11px] text-ccl-muted">
+            {loaderKind === "vanilla"
+              ? "设为原版将只保留纯净游戏（不删除已装的 loader 文件，但实例以原版启动）"
+              : `将安装 ${LOADER_LABEL[loaderKind]} ${loaderVersion || ""} 并设为该实例的加载器`}
+          </span>
+        </div>
+        {!loadingLoader && loaderKind !== "vanilla" && loaderVersions.length === 0 && (
+          <p className="text-[11px] text-ccl-warn mt-1.5">
+            该 MC 版本暂无 {LOADER_LABEL[loaderKind]} 版本，请换版本或换加载器
+          </p>
+        )}
+      </Section>
+
+      {progress && (
+        <div className="text-[12px] text-ccl-muted flex items-center gap-2">
+          <Loader2 size={12} className="animate-spin" />
+          {progress.phase}
+          {progress.total > 0 && ` ${Math.floor((progress.done / progress.total) * 100)}%`}
+        </div>
+      )}
     </div>
   );
 }

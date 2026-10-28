@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+import { useState } from "react";
 import Layout from "./components/Layout";
 import HomePage from "./pages/HomePage";
 import InstancesPage from "./pages/InstancesPage";
@@ -13,12 +14,36 @@ import AccountsPage from "./pages/AccountsPage";
 import SettingsPage from "./pages/SettingsPage";
 import LinkPage from "./pages/LinkPage";
 import AboutPage from "./pages/AboutPage";
+import FirstLaunchSetup from "./pages/FirstLaunchSetup";
+import { isMobile } from "./lib/env";
 
 /**
  * PCL 式五页签结构：启动 / 下载 / 联机 / 设置 / 更多
  * 下载、设置、更多 各带 152px 子导航（由 Layout 依路由渲染）
  */
 export default function App() {
+  const [setupDone, setSetupDone] = useState(
+    () =>
+      !isMobile() ||
+      localStorage.getItem("ccl_android_first_launch") === "done"
+  );
+
+  // 安卓首次启动：先走初始化向导（存储权限 + 下载 Java）
+  if (!setupDone) {
+    return (
+      <FirstLaunchSetup
+        onDone={() => {
+          try {
+            localStorage.setItem("ccl_android_first_launch", "done");
+          } catch {
+            /* ignore */
+          }
+          setSetupDone(true);
+        }}
+      />
+    );
+  }
+
   return (
     <Routes>
       <Route element={<Layout />}>
