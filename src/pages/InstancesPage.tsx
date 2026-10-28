@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus, Trash2, FolderOpen, Puzzle, Settings2, Loader2 } from "lucide-react";
 import { useApp } from "../store/app";
-import { api } from "../lib/tauri";
+import { api, onInstallProgress } from "../lib/tauri";
 
 const LOADERS = [
   { id: "vanilla", label: "原版", desc: "纯净游戏，无任何模组加载器" },
@@ -152,6 +152,15 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
   const [manifest, setManifest] = useState<{ id: string; vtype: string }[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [progress, setProgress] = useState<{ phase: string; done: number; total: number } | null>(
+    null
+  );
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    onInstallProgress((p) => setProgress(p)).then((f) => (un = f));
+    return () => un?.();
+  }, []);
 
   useEffect(() => {
     setLoadingVersions(true);
@@ -185,21 +194,23 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
   const snapshots = manifest.filter((v) => v.vtype !== "release");
 
   const submit = async () => {
+    if (loader !== "vanilla" && !loaderVersion) {
+      showToast("请先选择加载器版本，或改选原版", "bad");
+      return;
+    }
     setSaving(true);
+    setProgress({ phase: "准备安装", done: 0, total: 0 });
     try {
-      await api.createInstance(
-        name,
-        mcVersion,
-        loader,
-        loader === "vanilla" ? null : loaderVersion,
-        memory
-      );
-      showToast("实例已创建，请到版本页安装游戏");
+      const loaderToUse = loader === "vanilla" ? null : loader;
+      const lv = loader === "vanilla" ? null : loaderVersion;
+      await api.downloadAsInstance(mcVersion, name, memory, loaderToUse, lv);
+      showToast(`实例「${name}」已创建并完成安装`);
       onClose();
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
       setSaving(false);
+      setProgress(null);
     }
   };
 
@@ -300,21 +311,29 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
               <div>版本：<b className="text-ccl-text">{mcVersion}</b></div>
               <div>加载器：<b className="text-ccl-text">{LOADERS.find((l) => l.id === loader)?.label}</b>{loader !== "vanilla" && loaderVersion && ` ${loaderVersion}`}</div>
               <div>内存：<b className="text-ccl-text">{memory} MB</b></div>
+              <div className="mt-1 text-ccl-brush2">提交后将自动下载游戏本体与所选加载器，一步到位（如 PCL）。</div>
             </div>
           </div>
         )}
 
-        <div className="flex justify-between mt-6">
-          <button className="btn btn-ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>
+        {progress && (
+          <div className="mt-5 text-[12px] text-ccl-muted flex items-center gap-2">
+            <Loader2 size={12} className="animate-spin" />
+            {progress.phase}
+            {progress.total > 0 && ` ${Math.floor((progress.done / progress.total) * 100)}%`}
+          </div>
+        )}
+        <div className="flex justify-between mt-3">
+          <button className="btn btn-ghost" disabled={step === 0 || saving} onClick={() => setStep(step - 1)}>
             上一步
           </button>
           {step < 2 ? (
-            <button className="btn btn-primary" onClick={() => setStep(step + 1)}>
+            <button className="btn btn-primary" disabled={saving} onClick={() => setStep(step + 1)}>
               下一步
             </button>
           ) : (
             <button className="btn btn-primary" disabled={saving} onClick={submit}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} 创建
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} 创建并安装
             </button>
           )}
         </div>

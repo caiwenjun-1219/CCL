@@ -66,8 +66,8 @@ export default function VersionsPage() {
   const [testPhase, setTestPhase] = useState("");
   const [reports, setReports] = useState<Record<string, VersionTestReport>>({});
 
-  // 加载器安装
-  const [loaderKind, setLoaderKind] = useState("fabric");
+  // 加载器安装（默认原版：新建实例时只装纯净游戏，选了加载器才一并安装）
+  const [loaderKind, setLoaderKind] = useState("vanilla");
   const [loaderVersions, setLoaderVersions] = useState<string[]>([]);
   const [loaderVersion, setLoaderVersion] = useState("");
   const [installingLoader, setInstallingLoader] = useState(false);
@@ -165,12 +165,23 @@ export default function VersionsPage() {
 
   const totalCount = groups.reduce((n, g) => n + g.items.length, 0);
 
-  /** 下载并新建一个独立实例（后端失败会自动回滚实例目录） */
-  const downloadAsNewInstance = async (versionId: string) => {
+  /** 下载并新建一个独立实例（后端失败会自动回滚实例目录）。
+   * 可选 loader / loaderVersion：随本体一并安装模组加载器（对齐 PCL）。 */
+  const downloadAsNewInstance = async (
+    versionId: string,
+    loaderArg?: string | null,
+    loaderVersionArg?: string | null
+  ) => {
     setCreatingInstance(true);
     setProgress({ phase: "创建实例", done: 0, total: 0 });
     try {
-      const inst = await api.downloadAsInstance(versionId, null, settings.max_memory ?? null);
+      const inst = await api.downloadAsInstance(
+        versionId,
+        null,
+        settings.max_memory ?? null,
+        loaderArg ?? null,
+        loaderVersionArg ?? null
+      );
       await loadInstances();
       setInstanceId(inst.id); // 切到新实例，接着装加载器 / 看已装版本都直接可用
       setCurrentInstance(inst.id); // 启动页也跟着切到新实例
@@ -180,13 +191,16 @@ export default function VersionsPage() {
     }
   };
 
-  /** 主下载按钮：未选实例时自动建实例，选了实例就装进该实例 */
+  /** 主下载按钮：未选实例时自动建实例（若选了加载器则一并安装），选了实例就装进该实例 */
   const install = async (versionId: string) => {
     if (!versionId || downloading) return;
     setDownloading(versionId);
     try {
       if (!instance) {
-        await downloadAsNewInstance(versionId);
+        // 自动建实例：原版只装本体；选了加载器则本体 + 加载器一并安装
+        const lk = loaderKind === "vanilla" ? null : loaderKind;
+        const lv = lk ? loaderVersion : null;
+        await downloadAsNewInstance(versionId, lk, lv);
       } else {
         setProgress({ phase: "开始下载", done: 0, total: 0 });
         await api.installVersion(await mcRoot(), versionId);
@@ -205,12 +219,14 @@ export default function VersionsPage() {
     }
   };
 
-  /** 另建实例：即使已经选了目标实例，也强制新开一个 */
+  /** 另建实例：即使已经选了目标实例，也强制新开一个（携带当前选中的加载器） */
   const installAsNewInstance = async (versionId: string) => {
     if (downloading) return;
     setDownloading(versionId);
     try {
-      await downloadAsNewInstance(versionId);
+      const lk = loaderKind === "vanilla" ? null : loaderKind;
+      const lv = lk ? loaderVersion : null;
+      await downloadAsNewInstance(versionId, lk, lv);
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
@@ -529,23 +545,22 @@ export default function VersionsPage() {
             </div>
           )}
 
-          {/* 加载器安装（跟随选中版本，PCL 安装选项风格） */}
-          {mcVersion && !instance && (
+          {/* 加载器选择（跟随选中版本）：
+              新建实例时随本体一并安装；装到已有实例时单独安装 */}
+          {mcVersion && (
             <div className="card">
-              <h2 className="text-[13px] font-bold mb-1.5">为 {mcVersion} 安装模组加载器</h2>
-              <p className="text-[12px] text-ccl-muted">
-                先在上方「下载并创建实例」完成本体安装，实例自动建好后就能继续装 Fabric / Quilt /
-                NeoForge / Forge。
-              </p>
-            </div>
-          )}
-          {mcVersion && instance && (
-            <div className="card">
-              <h2 className="text-[13px] font-bold mb-3">
-                为 {mcVersion} 安装模组加载器（安装到「{instance.name}」）
+              <h2 className="text-[13px] font-bold mb-1.5">
+                {instance
+                  ? `为 ${mcVersion} 安装模组加载器（安装到「${instance.name}」）`
+                  : `为 ${mcVersion} 选择模组加载器`}
               </h2>
+              <p className="text-[12px] text-ccl-muted mb-3">
+                {instance
+                  ? "选择加载器与版本后点「安装」，安装到当前实例。"
+                  : "选择加载器与版本后，上方「下载并创建实例」会一并安装游戏本体与加载器（如 PCL）；选「原版」则只装纯净游戏。"}
+              </p>
               <div className="flex flex-wrap items-center gap-2">
-                {["fabric", "quilt", "neoforge", "forge"].map((k) => (
+                {["vanilla", "fabric", "quilt", "neoforge", "forge"].map((k) => (
                   <button
                     key={k}
                     className={`btn !py-1.5 !px-3 ${
@@ -553,7 +568,7 @@ export default function VersionsPage() {
                     }`}
                     onClick={() => setLoaderKind(k)}
                   >
-                    {LOADER_LABEL[k]}
+                    {k === "vanilla" ? "原版" : LOADER_LABEL[k]}
                   </button>
                 ))}
                 {loadingLoader ? (
@@ -566,7 +581,7 @@ export default function VersionsPage() {
                     className="field !w-44"
                     value={loaderVersion}
                     onChange={(e) => setLoaderVersion(e.target.value)}
-                    disabled={loaderVersions.length === 0}
+                    disabled={loaderVersions.length === 0 || loaderKind === "vanilla"}
                   >
                     {loaderVersions.map((v) => (
                       <option key={v} value={v}>
@@ -575,18 +590,20 @@ export default function VersionsPage() {
                     ))}
                   </select>
                 )}
-                <button
-                  className="btn btn-primary"
-                  disabled={installingLoader || !loaderVersion || !instance}
-                  onClick={installLoader}
-                >
-                  {installingLoader ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <Download size={13} />
-                  )}
-                  安装
-                </button>
+                {instance && (
+                  <button
+                    className="btn btn-primary"
+                    disabled={installingLoader || !loaderVersion}
+                    onClick={installLoader}
+                  >
+                    {installingLoader ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Download size={13} />
+                    )}
+                    安装
+                  </button>
+                )}
                 {!loadingLoader && loaderError && (
                   <span className="text-[12px] text-ccl-warn">{loaderError}</span>
                 )}

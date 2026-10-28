@@ -269,12 +269,21 @@ export const api = {
     invoke<string[]>("mc_local_versions", { gameDir }),
   installVersion: (gameDir: string, versionId: string) =>
     invoke<string>("mc_install_version", { gameDir, versionId }),
-  /// 下载本体并自动创建同名实例（失败自动回滚实例目录）
-  downloadAsInstance: (versionId: string, name?: string | null, maxMemory?: number | null) =>
+  /// 下载本体并自动创建同名实例（失败自动回滚实例目录）。
+  /// 可选 loader / loaderVersion：建实例的同时一并安装模组加载器（对齐 PCL）。
+  downloadAsInstance: (
+    versionId: string,
+    name?: string | null,
+    maxMemory?: number | null,
+    loader?: string | null,
+    loaderVersion?: string | null
+  ) =>
     invoke<Instance>("mc_download_as_instance", {
       versionId,
       name: name ?? null,
       maxMemory: maxMemory ?? null,
+      loader: loader ?? null,
+      loaderVersion: loaderVersion ?? null,
     }),
   deleteVersion: (gameDir: string, versionId: string) =>
     invoke("mc_delete_version", { gameDir, versionId }),

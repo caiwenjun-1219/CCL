@@ -118,7 +118,8 @@ export default function JavaPage() {
           </p>
         ) : (
           <p className="text-[12px] text-ccl-muted mb-4">
-            从 Adoptium API 自动下载最新补丁版，安装到启动器数据目录。
+            通过 TUNA 镜像（清华大学开源软件镜像站）自动下载 Adoptium 最新补丁版，
+            安装到启动器数据目录；镜像不可用时自动回退官方源。
             启动游戏时会按 MC 版本自动选择合适的主版本。
           </p>
         )}

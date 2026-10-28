@@ -616,12 +616,20 @@ pub async fn mc_install_version(
 
 /// 下载游戏本体并为它自动创建一个独立实例（PCL/HMCL 「下载即一个版本」的行为）。
 /// 实例名默认与版本号同名，重名自动追加序号；安装失败会回滚删除刚建的实例目录。
+///
+/// 新增可选 `loader` / `loader_version`：在建实例的同一次事务里把模组加载器也装上，
+/// 对齐 PCL「安装实例时一并装加载器」的体验。加载器安装函数（fabric/quilt 的
+/// `mc_install_loader`、forge/neoforge 的 `mc_install_forge`）都会自行安装父版本 MC
+/// 本体，因此这里无需重复预装，只有原版分支才显式装本体。任一环节失败都回滚实例目录
+/// （全局 versions 下的版本文件共享、不会被删，重试不会重复下载）。
 #[tauri::command]
 pub async fn mc_download_as_instance(
     app: AppHandle,
     version_id: String,
     name: Option<String>,
     max_memory: Option<u32>,
+    loader: Option<String>,
+    loader_version: Option<String>,
 ) -> Result<crate::instances::Instance, String> {
     // 先拿到版本 JSON：网络/清单失败时不留任何空实例
     let vjson = resolve_version_json(&app, &version_id).await?;
@@ -639,21 +647,63 @@ pub async fn mc_download_as_instance(
         max_memory,
     )?;
 
-    match install_version(&app, &crate::paths::mc_root(&app, &inst), &version_id, &vjson, true).await {
-        Ok(()) => crate::instances::update_instance(
-            app.clone(),
-            inst.id.clone(),
-            crate::instances::InstancePatch {
-                installed_version_id: Some(version_id.clone()),
-                loader: Some("vanilla".into()),
-                ..Default::default()
-            },
-        ),
-        Err(e) => {
-            crate::instances::remove_instance_dir(&app, &inst.id);
-            Err(format!("下载失败，已回滚新建的实例：{e}"))
+    let mc_root = crate::paths::mc_root(&app, &inst);
+    let root_str = mc_root.to_string_lossy().to_string();
+
+    // 回滚辅助：删实例目录（全局版本文件共享，保留以便重试）
+    let rollback = || crate::instances::remove_instance_dir(&app, &inst.id);
+
+    // 1) 装本体 +（可选）装加载器；fabric/quilt/forge/neoforge 的安装函数自带装 MC 本体
+    let (final_loader, final_loader_version, installed_id) = match loader.as_deref() {
+        None | Some("") | Some("vanilla") => {
+            if let Err(e) = install_version(&app, &mc_root, &version_id, &vjson, true).await {
+                rollback();
+                return Err(format!("下载失败，已回滚新建的实例：{e}"));
+            }
+            ("vanilla".to_string(), None, version_id.clone())
         }
-    }
+        Some(k) if k == "fabric" || k == "quilt" => {
+            let lv = loader_version
+                .clone()
+                .ok_or_else(|| format!("未指定 {k} 版本"))?;
+            match mc_install_loader(app.clone(), root_str.clone(), version_id.clone(), k.to_string(), lv.clone()).await {
+                Ok(id) => (k.to_string(), Some(lv), id),
+                Err(e) => {
+                    rollback();
+                    return Err(format!("{k} 安装失败，已回滚实例：{e}"));
+                }
+            }
+        }
+        Some(k) if k == "forge" || k == "neoforge" => {
+            let lv = loader_version
+                .clone()
+                .ok_or_else(|| format!("未指定 {k} 版本"))?;
+            match mc_install_forge(app.clone(), root_str.clone(), version_id.clone(), k.to_string(), lv.clone()).await {
+                Ok(id) => (k.to_string(), Some(lv), id),
+                Err(e) => {
+                    rollback();
+                    return Err(format!("{k} 安装失败，已回滚实例：{e}"));
+                }
+            }
+        }
+        Some(other) => {
+            rollback();
+            return Err(format!("未知加载器类型 {other}"));
+        }
+    };
+
+    // 2) 回写 installed_version_id / loader / loader_version
+    crate::instances::update_instance(
+        app.clone(),
+        inst.id.clone(),
+        crate::instances::InstancePatch {
+            installed_version_id: Some(installed_id),
+            loader: Some(final_loader),
+            loader_version: final_loader_version,
+            ..Default::default()
+        },
+    )?;
+    crate::instances::get_instance(&app, &inst.id)
 }
 
 /// 递归统计目录体积

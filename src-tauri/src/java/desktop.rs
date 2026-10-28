@@ -13,7 +13,7 @@ use crate::downloader::{self, DlTask};
 use crate::settings;
 
 /// 下载源名称（前端展示用）
-pub const SOURCE_NAME: &str = "Adoptium / Eclipse Temurin";
+pub const SOURCE_NAME: &str = "Adoptium 镜像 (TUNA)";
 
 /// 桌面端可下载的 Java 主版本
 pub const SUPPORTED_MAJORS: &[u32] = &[8, 11, 17, 21, 25];
@@ -276,12 +276,24 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
     };
 
     let zip_path = settings::java_dir(&app).join(format!("{semver}.zip"));
+
+    // 国内加速：TUNA 镜像文件名与 GitHub Release 完全一致，从官方 link 取出文件名拼接。
+    // 镜像优先，下载失败（404 / 网络）自动回退到官方 link。
+    let file_name = std::path::Path::new(&link)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("无法从 Adoptium 链接解析文件名")?
+        .to_string();
+    let mirror_url = format!(
+        "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/{major}/jdk/x64/windows/{file_name}"
+    );
     let task = DlTask::new(
         &format!("java-{major}"),
         &format!("Java {major} ({semver})"),
-        &link,
+        &mirror_url,
         &zip_path,
-    );
+    )
+    .with_fallbacks(vec![link.clone()]);
     downloader::download_one(&client, &app, &task).await?;
 
     // 解压
