@@ -38,9 +38,19 @@ use super::common::{parse_major, required_java_major, select_java, JavaInfo};
 use crate::downloader::{self, DlTask};
 use crate::settings;
 
-/// EclipseJRE 发布页（Android OpenJDK 交叉编译产物）
-const RELEASE_BASE: &str =
+/// EclipseJRE 发布页原始地址（GitHub Release）
+///
+/// 注意：本机与国内移动网络直连 `github.com/.../releases/download/...` 常被重置
+/// （`error sending request for url`），因此实际请求会先套一层加速前缀，
+/// 见 [`source_prefixes`]。
+const GH_RELEASE: &str =
     "https://github.com/SouhardyaMaybe/EclipseJRE/releases/download/jres-v1.0.0";
+
+/// 内置 GitHub 加速前缀（按优先级尝试）。空串 = 直连 GitHub。
+///
+/// 2026-10 实测：`gh-proxy.com` 稳定；`ghproxy.net` 次之；直连基本不可用
+/// （curl 报 `Recv failure: Connection was reset`），保留作为最后兜底。
+const BUILTIN_PREFIXES: &[&str] = &["https://gh-proxy.com/", "https://ghproxy.net/", ""];
 
 /// Android 端支持的 JRE 主版本（对应 EclipseJRE 构建的 8/17/21/25）
 pub const SUPPORTED_MAJORS: &[u32] = &[8, 17, 21, 25];
@@ -101,29 +111,104 @@ impl ArchEntry {
     }
 }
 
-/// 拉取指定主版本的官方清单
-async fn fetch_manifest(
+/// 规整用户填写的加速前缀：补协议、补结尾斜杠；空串原样返回（= 直连）
+fn normalize_prefix(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let mut s = t.to_string();
+    if !s.starts_with("http://") && !s.starts_with("https://") {
+        s = format!("https://{s}");
+    }
+    if !s.ends_with('/') {
+        s.push('/');
+    }
+    s
+}
+
+/// 候选下载前缀：自定义（设置里填的）优先，其后是内置加速源与直连
+fn source_prefixes(app: &AppHandle) -> Vec<String> {
+    let custom = normalize_prefix(&settings::load(app).github_mirror);
+    let mut out: Vec<String> = Vec::with_capacity(BUILTIN_PREFIXES.len() + 1);
+    if !custom.is_empty() {
+        out.push(custom);
+    }
+    for p in BUILTIN_PREFIXES {
+        let p = p.to_string();
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// 用指定前缀拼出 release 资产的完整地址
+fn release_url(prefix: &str, file: &str) -> String {
+    format!("{prefix}{GH_RELEASE}/{file}")
+}
+
+/// 人类可读的源名称（错误信息用）
+fn source_label(prefix: &str) -> &str {
+    if prefix.is_empty() {
+        "GitHub 直连"
+    } else {
+        prefix
+    }
+}
+
+/// 从指定源拉取 `jre{major}-multiarch.json`
+async fn fetch_manifest_from(
     client: &reqwest::Client,
     major: u32,
+    prefix: &str,
 ) -> Result<MultiArchManifest, String> {
-    let url = format!("{RELEASE_BASE}/jre{major}-multiarch.json");
+    let url = release_url(prefix, &format!("jre{major}-multiarch.json"));
     let resp = client
         .get(&url)
+        .timeout(std::time::Duration::from_secs(45))
         .send()
         .await
-        .map_err(|e| format!("请求 JRE 清单失败: {e}"))?;
+        .map_err(|e| format!("请求失败: {e}"))?;
     let status = resp.status();
     let body = resp
         .text()
         .await
-        .map_err(|e| format!("读取 JRE 清单失败: {e}"))?;
+        .map_err(|e| format!("读取失败: {e}"))?;
     if !status.is_success() {
         return Err(format!(
-            "JRE 清单返回 HTTP {status}：{}",
-            body.chars().take(150).collect::<String>()
+            "HTTP {status}：{}",
+            body.chars().take(120).collect::<String>()
         ));
     }
-    serde_json::from_str(&body).map_err(|e| format!("解析 JRE 清单失败: {e}"))
+    serde_json::from_str(&body).map_err(|e| format!("清单解析失败: {e}"))
+}
+
+/// 依次尝试各加速源拉清单，返回「命中的清单 + 排好序的前缀列表」
+///
+/// 命中的源会被提到最前，后续两个归档包优先从同一个源下载（换源会重新握手，更慢）；
+/// 该源后续失败时仍会自动回退到其余源。
+async fn pick_manifest(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    major: u32,
+) -> Result<(MultiArchManifest, Vec<String>), String> {
+    let prefixes = source_prefixes(app);
+    let mut errors: Vec<String> = Vec::new();
+    for prefix in &prefixes {
+        match fetch_manifest_from(client, major, prefix).await {
+            Ok(m) => {
+                let mut ordered = vec![prefix.clone()];
+                ordered.extend(prefixes.iter().filter(|p| *p != prefix).cloned());
+                return Ok((m, ordered));
+            }
+            Err(e) => errors.push(format!("{}：{e}", source_label(prefix))),
+        }
+    }
+    Err(format!(
+        "请求 JRE 清单失败，所有下载源均不可用：\n  {}\n可在「设置 → 网络 → GitHub 加速」里填写自己的加速地址（如 https://gh-proxy.com/）。",
+        errors.join("\n  ")
+    ))
 }
 
 /// 计算文件的 sha256（十六进制小写）
@@ -267,66 +352,76 @@ async fn download_verified(
     idx: usize,
     entry: &Asset,
     dest_dir: &Path,
+    prefixes: &[String],
 ) -> Result<PathBuf, String> {
-    const MAX_TRY: u32 = 3;
+    /// 单个源内的重试次数（大小/sha 不符时原地重下，多半是断流）
+    const MAX_TRY: u32 = 2;
     let file_name = &entry.name;
-    let url = format!("{RELEASE_BASE}/{file_name}");
     let dl_path = dest_dir.join(file_name);
     let mut last_err = String::new();
 
-    for attempt in 1..=MAX_TRY {
-        let _ = std::fs::remove_file(&dl_path);
-        let task = DlTask::new(
-            &format!("java-{major}-{idx}"),
-            &format!("Java {major}（{file_name}）"),
-            &url,
-            &dl_path,
-        );
-        match downloader::download_one(client, app, &task).await {
-            Ok(_) => {}
-            Err(e) => {
-                last_err = e;
-                if attempt < MAX_TRY {
-                    tokio::time::sleep(std::time::Duration::from_millis(800 * attempt as u64)).await;
+    for (si, prefix) in prefixes.iter().enumerate() {
+        let url = release_url(prefix, file_name);
+        for attempt in 1..=MAX_TRY {
+            let _ = std::fs::remove_file(&dl_path);
+            let task = DlTask::new(
+                &format!("java-{major}-{idx}"),
+                &format!("Java {major}（{file_name}）"),
+                &url,
+                &dl_path,
+            );
+            match downloader::download_one(client, app, &task).await {
+                Ok(_) => {}
+                Err(e) => {
+                    last_err = format!("{}：{e}", source_label(prefix));
+                    if attempt < MAX_TRY {
+                        tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64))
+                            .await;
+                    }
                     continue;
                 }
-                break;
             }
-        }
 
-        // 大小校验：截断是最常见的失败形式，先于 sha256 拦截
-        let actual_size = std::fs::metadata(&dl_path).map(|m| m.len()).unwrap_or(0);
-        if entry.size > 0 && actual_size != entry.size {
-            last_err = format!(
-                "{file_name} 大小不符：期望 {} 字节，实际 {actual_size} 字节",
-                entry.size
-            );
-            if attempt < MAX_TRY {
-                tokio::time::sleep(std::time::Duration::from_millis(800 * attempt as u64)).await;
+            // 大小校验：截断是最常见的失败形式，先于 sha256 拦截
+            let actual_size = std::fs::metadata(&dl_path).map(|m| m.len()).unwrap_or(0);
+            if entry.size > 0 && actual_size != entry.size {
+                last_err = format!(
+                    "{}：{file_name} 大小不符（期望 {} 字节，实际 {actual_size} 字节）",
+                    source_label(prefix),
+                    entry.size
+                );
+                if attempt < MAX_TRY {
+                    tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64)).await;
+                }
                 continue;
             }
-            break;
-        }
 
-        // sha256 校验
-        let actual = sha256_file(&dl_path)?;
-        if !actual.eq_ignore_ascii_case(&entry.sha256) {
-            last_err = format!(
-                "{file_name} 校验失败：期望 sha256 {}，实际 {actual}",
-                entry.sha256
-            );
-            if attempt < MAX_TRY {
-                tokio::time::sleep(std::time::Duration::from_millis(800 * attempt as u64)).await;
+            // sha256 校验
+            let actual = sha256_file(&dl_path)?;
+            if !actual.eq_ignore_ascii_case(&entry.sha256) {
+                last_err = format!(
+                    "{}：{file_name} 校验失败（期望 sha256 {}，实际 {actual}）",
+                    source_label(prefix),
+                    entry.sha256
+                );
+                if attempt < MAX_TRY {
+                    tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64)).await;
+                }
                 continue;
             }
-            break;
+
+            return Ok(dl_path);
         }
-        return Ok(dl_path);
+        // 换下一个源之前稍作停顿，避免连续打同一个 CDN
+        if si + 1 < prefixes.len() {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
     }
 
     let _ = std::fs::remove_file(&dl_path);
     Err(format!(
-        "Java {major} 组件 {file_name} 下载失败（已重试 {MAX_TRY} 次）：{last_err}"
+        "Java {major} 组件 {file_name} 下载失败（已尝试 {} 个源）：{last_err}",
+        prefixes.len()
     ))
 }
 
@@ -347,7 +442,7 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
     }
 
     let client = downloader::http_client();
-    let manifest = fetch_manifest(&client, major).await?;
+    let (manifest, prefixes) = pick_manifest(&client, &app, major).await?;
     if manifest.java_version != major {
         return Err(format!(
             "JRE 清单版本不符：请求 Java {major}，返回 {}",
@@ -384,7 +479,8 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
     let arch_asset = arch.as_asset();
     let mut installed = 0usize;
     for (idx, entry) in [&manifest.universal, &arch_asset].into_iter().enumerate() {
-        let dl_path = download_verified(&client, &app, major, idx, entry, &tmp).await?;
+        let dl_path =
+            download_verified(&client, &app, major, idx, entry, &tmp, &prefixes).await?;
 
         let (files, links) = extract_tar_xz(&dl_path, &dest)?;
         installed += files;

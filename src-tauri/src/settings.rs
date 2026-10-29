@@ -67,6 +67,11 @@ pub struct AppSettings {
     /// "http://127.0.0.1:7897" 或 "socks5://127.0.0.1:7897"
     #[serde(default = "default_proxy")]
     pub proxy: String,
+    /// GitHub 加速前缀（用于 Android JRE 等 GitHub Release 资产）：
+    /// 留空 = 自动（gh-proxy.com → ghproxy.net → 直连 GitHub）；
+    /// 填写 = 自定义前缀，如 "https://gh-proxy.com/"（会拼在完整 GitHub URL 前）
+    #[serde(default)]
+    pub github_mirror: String,
 }
 
 /// 默认使用「自动」：读取系统代理设置（Clash 等），未开启则等价于直连
@@ -96,6 +101,7 @@ impl Default for AppSettings {
             version_isolation: default_isolation(),
             custom_folders: vec![],
             proxy: default_proxy(),
+            github_mirror: String::new(),
         }
     }
 }

@@ -492,6 +492,21 @@ export default function SettingsPage() {
               <option value="mojang">Mojang 官方源</option>
             </select>
           </Row>
+          <Row
+            label="GitHub 加速"
+            desc="安卓端 Java（EclipseJRE）从 GitHub Release 下载，国内直连常被重置。留空 = 自动轮换内置加速源；也可填自己的前缀，如 https://gh-proxy.com/"
+          >
+            <div className="flex items-center gap-2">
+              <Globe size={13} className="text-ccl-gray4" />
+              <input
+                className="field !w-[300px]"
+                placeholder="留空 = 自动（gh-proxy → ghproxy）"
+                value={draft.github_mirror ?? ""}
+                onChange={(e) => setDraft({ ...draft, github_mirror: e.target.value })}
+                onBlur={() => commit({ github_mirror: draft.github_mirror ?? "" })}
+              />
+            </div>
+          </Row>
           <Row label="CurseForge API Key" desc="用于 CurseForge 搜索与整合包导入；Modrinth 无需密钥。">
             <div className="flex items-center gap-2">
               <KeyRound size={13} className="text-ccl-gray4" />

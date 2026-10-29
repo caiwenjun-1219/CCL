@@ -23,6 +23,8 @@ export interface AppSettings {
   custom_folders: string[];
   /** 网络代理："" = 直连；"auto" = 自动读系统代理；否则 "http://host:port" / "socks5://host:port" */
   proxy: string;
+  /** GitHub 加速前缀（Android JRE 等 Release 资产用）；空 = 自动多源回退 */
+  github_mirror: string;
 }
 
 /** 可选的 Minecraft 文件夹 */
