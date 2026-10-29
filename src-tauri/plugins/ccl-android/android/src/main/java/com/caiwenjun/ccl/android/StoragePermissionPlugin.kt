@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -67,7 +68,15 @@ class StoragePermissionPlugin(private val activity: Activity) : Plugin(activity)
         invoke.resolve(obj)
     }
 
-    /** 参数：assets 内的相对路径 / 目标绝对路径 */
+    /**
+     * 参数：assets 内的相对路径 / 目标绝对路径
+     *
+     * 必须带 `@InvokeArg`：release 构建开了 R8（optimization.enable），
+     * 没有这个注解时 tauri-api 的 `-keep @InvokeArg` 规则不生效，
+     * 字段 src/dest 会被重命名成 a/b，Jackson 按名字取不到值 →
+     * 参数静默变成空串（曾导致内置 JRE 检测恒为 false，退回联网下载）。
+     */
+    @InvokeArg
     class CopyAssetArgs {
         var src: String = ""
         var dest: String = ""
@@ -78,12 +87,19 @@ class StoragePermissionPlugin(private val activity: Activity) : Plugin(activity)
         val args = invoke.parseArgs(CopyAssetArgs::class.java)
         val obj = JSObject()
         obj.put("exists", assetExists(args.src))
+        // 便于排查：把实际收到的参数回传，空串说明参数没解析出来
+        obj.put("src", args.src)
         invoke.resolve(obj)
     }
 
     @Command
     fun copyBundledAsset(invoke: Invoke) {
         val args = invoke.parseArgs(CopyAssetArgs::class.java)
+        if (args.src.isBlank() || args.dest.isBlank()) {
+            // 参数解析失败时不要再静默往下跑，直接报错暴露问题
+            invoke.reject("内置资源参数为空（src=\"${args.src}\", dest=\"${args.dest}\"）")
+            return
+        }
         try {
             val destFile = java.io.File(args.dest)
             destFile.parentFile?.mkdirs()

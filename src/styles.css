@@ -849,6 +849,40 @@ select.field {
     padding-left: 12px !important;
     padding-right: 12px !important;
   }
+
+  /* ---------------------------------------------------------------- 移动端滚动修复
+     桌面是「侧栏 + 内容」横排，main 的高度由 align-items:stretch 决定，天然没问题；
+     窄屏 pcl-body 改成竖排后，main 作为列向 flex 项目，默认 min-height:auto 会把它
+     撑到内容高度，于是 .pcl-frame 的 overflow:hidden 直接把超出的部分裁掉——
+     外层滚动容器 .pcl-page 的滚动高度正好等于自己的高度，表现就是「页面滑不动」。 */
+  .pcl-body > main {
+    min-height: 0;
+    height: auto;
+  }
+  .pcl-page {
+    min-height: 0;
+    overflow-y: auto !important;
+    overflow-x: hidden;
+    /* 手势条/虚拟导航栏会盖住页面底部，留出安全区，否则最后一排按钮点不到 */
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px)) !important;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+  }
+  /* 页面根节点在窄屏不再撑满视口：内容多高就多高，全部交给 .pcl-page 滚动 */
+  .pcl-page > div[class*="h-full"] {
+    height: auto !important;
+    min-height: 0 !important;
+  }
+  /* 版本页 / 实例详情：内部左右分栏已改上下堆叠，主面板不再各自滚动，
+     否则会出现「内层容器撑着高度、外层层层裁切」的死锁，底部按钮永远点不到 */
+  .ver-split,
+  .idetail-split {
+    overflow: visible !important;
+  }
+  .ver-split > .overflow-auto:not(.ver-list),
+  .idetail-split > .overflow-auto:not(.idetail-nav) {
+    overflow: visible !important;
+  }
   /* 设置项行：窄屏改为上下堆叠，避免右侧固定宽控件把左列文字挤成竖排 */
   .pcl-setting-row {
     flex-direction: column;

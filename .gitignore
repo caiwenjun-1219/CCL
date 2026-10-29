@@ -46,3 +46,6 @@ diag_single/
 
 # APK 签名产物
 *.idsig
+
+# 调试截图/临时脚本
+.tmp/

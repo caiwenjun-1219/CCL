@@ -58,9 +58,14 @@ const GH_RELEASE: &str =
 /// - `gh-proxy.com` / `ghproxy.net`：备用公共节点
 /// - 空串：直连兜底（2026-10 实测国内基本被重置，仅作最后尝试）
 const BUILTIN_PREFIXES: &[&str] = &[
+    // gh-proxy.cn 的三网优选节点：实测 207 KB/s，明显快于老节点
+    "https://eo.gh-proxy.cn/github/",
+    "https://z1.gh-proxy.cn/github/",
+    "https://z2.gh-proxy.cn/github/",
     "https://axisnow.gh-proxy.org/",
     "https://gh-proxy.com/",
     "https://ghproxy.net/",
+    // 空串 = GitHub 直连（最后兜底）
     "",
 ];
 
@@ -472,8 +477,12 @@ fn bundled_asset_names(major: u32, arch: &str) -> (String, String) {
 
 /// 当前设备有没有可用的内置 JRE；有则返回其主版本
 pub fn bundled_java_major(app: &AppHandle) -> Option<u32> {
-    let (uni, bin) = bundled_asset_names(BUNDLED_MAJOR, device_arch());
-    if ccl_android::has_asset(app, &uni) && ccl_android::has_asset(app, &bin) {
+    let arch = device_arch();
+    let (uni, bin) = bundled_asset_names(BUNDLED_MAJOR, arch);
+    let has_uni = ccl_android::has_asset(app, &uni);
+    let has_bin = ccl_android::has_asset(app, &bin);
+    println!("[ccl-java] 内置包探测 arch={arch} uni={uni}({has_uni}) bin={bin}({has_bin})");
+    if has_uni && has_bin {
         Some(BUNDLED_MAJOR)
     } else {
         None
@@ -499,38 +508,53 @@ fn emit_bundle_progress(app: &AppHandle, major: u32, loaded: u64, finished: bool
 /// 从 APK assets 安装内置 JRE（对齐 FCL：首启只解包，不联网）
 ///
 /// 返回 `Ok(None)` 表示这个版本没有内置包，调用方应退回在线下载。
+///
+/// 判定「有没有内置包」不依赖单独探测命令，而是**直接尝试拷贝第一个组件**：
+/// 打不开 asset 就是没有（立刻返回 None），其它错误（磁盘满 / 权限）照实抛出。
+/// 这样即使探测接口本身出问题，也不会悄悄退化成联网下载。
 async fn install_bundled(app: &AppHandle, major: u32) -> Result<Option<JavaInfo>, String> {
-    if bundled_java_major(app) != Some(major) {
-        return Ok(None);
-    }
     let arch = device_arch();
     let dest = settings::java_dir(app).join(format!("jre{major}-{arch}"));
 
     // 装过且完整 → 直接复用（重装/重进向导都走这里，秒过）
     if let Some(info) = probe_jre(&dest) {
         if info.major == major {
+            println!("[ccl-java] 复用已安装的 {}", dest.display());
             let _ = app.emit("java-installed", &info.version);
             return Ok(Some(info));
         }
     }
 
     let (uni, bin) = bundled_asset_names(major, arch);
-    let _ = std::fs::remove_dir_all(&dest);
-    std::fs::create_dir_all(&dest).map_err(|e| format!("创建 Java 目录失败: {e}"))?;
     let tmp = settings::java_dir(app).join(".tmp");
     std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     let app2 = app.clone();
     let dest2 = dest.clone();
     let names = vec![uni, bin];
-    let info = tauri::async_runtime::spawn_blocking(move || -> Result<JavaInfo, String> {
+    let info = tauri::async_runtime::spawn_blocking(move || -> Result<Option<JavaInfo>, String> {
         for (idx, name) in names.iter().enumerate() {
             let file = name.rsplit('/').next().unwrap_or(name).to_string();
             emit_bundle_progress(&app2, major, (idx as u64) * 50, false);
             let local = tmp.join(&file);
             let _ = std::fs::remove_file(&local);
-            ccl_android::copy_asset(&app2, name, &local.to_string_lossy())
-                .map_err(|e| format!("释放内置 Java 组件 {file} 失败：{e}"))?;
+            let bytes = match ccl_android::copy_asset(&app2, name, &local.to_string_lossy()) {
+                Ok(b) => b,
+                // 第一个组件就打不开 → 本机确实没有内置包，交给在线下载
+                Err(e) if asset_missing(&e) && idx == 0 => {
+                    println!("[ccl-java] Java {major} 无内置包（{e}），走在线下载");
+                    return Ok(None);
+                }
+                Err(e) => return Err(format!("释放内置 Java 组件 {file} 失败：{e}")),
+            };
+            println!("[ccl-java] 已释放内置组件 {file} ({bytes} 字节)");
+            if bytes == 0 {
+                return Err(format!("内置组件 {file} 拷贝到磁盘后为 0 字节"));
+            }
+            if idx == 0 {
+                let _ = std::fs::remove_dir_all(&dest2);
+                std::fs::create_dir_all(&dest2).map_err(|e| format!("创建 Java 目录失败: {e}"))?;
+            }
             extract_tar_xz(&local, &dest2)?;
             let _ = std::fs::remove_file(&local);
             emit_bundle_progress(&app2, major, (idx as u64 + 1) * 50, false);
@@ -541,14 +565,31 @@ async fn install_bundled(app: &AppHandle, major: u32) -> Result<Option<JavaInfo>
             major,
             "Eclipse JRE for Android（APK 内置）".to_string(),
         )
+        .map(Some)
     })
     .await
     .map_err(|e| format!("内置 Java 安装线程异常: {e}"))??;
 
-    emit_bundle_progress(app, major, 100, true);
-    let _ = app.emit("java-installed", &info.version);
-    Ok(Some(info))
+    match info {
+        Some(info) => {
+            emit_bundle_progress(app, major, 100, true);
+            let _ = app.emit("java-installed", &info.version);
+            Ok(Some(info))
+        }
+        None => Ok(None),
+    }
 }
+
+/// 插件侧错误信息是否表示「assets 里没有这个文件」
+fn asset_missing(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("filenotfound")
+        || e.contains("not found")
+        || e.contains("no such file")
+        || e.contains("无法找到")
+}
+
+
 
 /// 下载并安装 Android JRE
 ///

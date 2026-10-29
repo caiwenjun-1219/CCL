@@ -19,3 +19,11 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# ---- CCL 自定义插件：R8 会把参数类字段改名，导致 Jackson 反序列化拿到空串 ----
+-keep class com.caiwenjun.ccl.android.** { *; }
+-keep @app.tauri.annotation.InvokeArg class * { *; }
+-keepclassmembers class * {
+    @app.tauri.annotation.Command <methods>;
+    @app.tauri.annotation.ActivityCallback <methods>;
+    @app.tauri.annotation.PermissionCallback <methods>;
+}

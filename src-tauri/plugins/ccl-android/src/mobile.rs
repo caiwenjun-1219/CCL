@@ -76,10 +76,23 @@ impl<R: Runtime> StoragePerm<R> {
         #[cfg(target_os = "android")]
         {
             let args = serde_json::json!({ "src": src, "dest": "" });
-            self.0
+            match self
+                .0
                 .run_mobile_plugin::<ExistsResponse>("hasBundledAsset", args)
-                .map(|r| r.exists)
-                .unwrap_or(false)
+            {
+                Ok(r) => {
+                    // 打日志：参数被静默解析成空串这类问题，只有在日志里看得见
+                    println!(
+                        "[ccl-android] hasBundledAsset({src}) -> exists={} echoed_src={:?}",
+                        r.exists, r.src
+                    );
+                    r.exists
+                }
+                Err(e) => {
+                    println!("[ccl-android] hasBundledAsset({src}) 调用失败: {e:?}");
+                    false
+                }
+            }
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -110,6 +123,9 @@ impl<R: Runtime> StoragePerm<R> {
 struct ExistsResponse {
     #[serde(default)]
     exists: bool,
+    /// 回声字段：Kotlin 侧把解析到的 src 原样返回，空串即代表参数没解析出来
+    #[serde(default)]
+    src: String,
 }
 
 #[derive(serde::Deserialize)]

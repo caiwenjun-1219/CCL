@@ -425,7 +425,7 @@ export default function Layout() {
             )
           )}
 
-          <main className="flex-1 min-w-0 relative flex flex-col">
+          <main className="flex-1 min-w-0 min-h-0 relative flex flex-col">
             <div
               ref={mainRef}
               className="flex-1 overflow-auto px-6 py-5 pcl-page"

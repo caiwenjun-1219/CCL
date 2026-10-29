@@ -164,7 +164,12 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
         <div className="card !p-7">
           {/* 顶部进度指示 */}
           <div className="flex items-center gap-2 mb-6">
-            {["欢迎", "存储权限", "下载 Java", "完成"].map((label, i) => (
+            {[
+              "欢迎",
+              "存储权限",
+              bundledMajor !== null ? "安装 Java" : "下载 Java",
+              "完成",
+            ].map((label, i) => (
               <div key={label} className="flex-1 flex flex-col items-center gap-1">
                 <div
                   className={`h-1.5 rounded-full w-full ${
@@ -187,8 +192,9 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
               <Rocket size={28} className="text-ccl-primary mb-3" />
               <h1 className="text-[18px] font-bold mb-2">欢迎使用 CCL 安卓版</h1>
               <p className="text-[13px] text-ccl-muted leading-relaxed mb-5">
-                首次启动需要完成初始化：授予存储权限，并下载运行游戏所需的 Java
-                运行时。整个过程参考 FCL，只需一次。
+                {bundledMajor !== null
+                  ? `首次启动需要完成初始化：授予存储权限，并释放安装包内自带的 Java ${bundledMajor} 运行时（无需联网）。整个过程参考 FCL，只需一次。`
+                  : "首次启动需要完成初始化：授予存储权限，并下载运行游戏所需的 Java 运行时。整个过程参考 FCL，只需一次。"}
               </p>
               <button
                 className="btn btn-primary w-full"
@@ -252,10 +258,13 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
           {step === 2 && (
             <div>
               <Download size={28} className="text-ccl-primary mb-3" />
-              <h1 className="text-[18px] font-bold mb-2">下载 Java 运行时</h1>
+              <h1 className="text-[18px] font-bold mb-2">
+                {bundledMajor !== null ? "安装 Java 运行时" : "下载 Java 运行时"}
+              </h1>
               <p className="text-[13px] text-ccl-muted leading-relaxed mb-2">
-                选择要下载的 Java 版本（现代版 Minecraft 推荐 Java 17，旧版 Mod
-                可能需要 Java 8）。下载完成后即可安装游戏。
+                {bundledMajor !== null
+                  ? `Java ${bundledMajor} 已随安装包提供，点击下方按钮即可在本地释放，全程不需要联网。其它版本仍需联网下载。`
+                  : "选择要下载的 Java 版本（现代版 Minecraft 推荐 Java 17，旧版 Mod 可能需要 Java 8）。下载完成后即可安装游戏。"}
               </p>
               {bundledMajor !== null && (
                 <p className="text-[12px] text-ccl-success leading-relaxed mb-4">
