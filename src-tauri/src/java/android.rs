@@ -376,11 +376,16 @@ async fn download_verified(
                 &url,
                 &dl_path,
             );
-            // 优先多线程分片下载：弱网下单连接只有百来 KB/s，分片能跑满带宽。
-            // 分片失败（源不支持 Range / 大文件断流）则回退到单流下载。
+            // 优先多源并行分片：单个加速节点跑到几 MB 就会被限流/断连，
+            // 把分片摊到所有可用源上，各域名配额独立，总吞吐叠加。
+            // 分片失败（都不支持 Range / 大文件断流）则回退到单流下载。
             let mut downloaded = false;
-            if entry.size >= 4 * 1024 * 1024 {
-                match downloader::download_multi(client, app, &task, entry.size, 8).await {
+            if entry.size >= 2 * 1024 * 1024 {
+                let urls: Vec<String> = prefixes
+                    .iter()
+                    .map(|p| release_url(p, file_name))
+                    .collect();
+                match downloader::download_multi(client, app, &task, &urls, entry.size, 8).await {
                     Ok(_) => downloaded = true,
                     Err(e) => last_err = format!("{}：{e}", source_label(prefix)),
                 }

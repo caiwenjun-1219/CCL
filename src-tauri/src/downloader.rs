@@ -6,9 +6,10 @@ use reqwest::header::{HeaderValue, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::Client;
 use serde::Serialize;
 use sha1::{Digest, Sha1};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
@@ -258,14 +259,54 @@ struct SegCtx {
     total: u64,
     id: String,
     name: String,
+    /// 速度滑动窗口：`(采样时刻, 累计字节)`。
+    ///
+    /// 之前按「总字节 / 总耗时」算平均速度，前期快后期慢时读数会一路下滑，
+    /// 看起来像「越下越慢」。改成只取最近几秒的增量，反映真实瞬时速度。
+    speed_win: Mutex<VecDeque<(Instant, u64)>>,
 }
 
 impl SegCtx {
+    fn new(id: &str, name: &str, total: u64) -> Self {
+        let start = Instant::now();
+        let mut win = VecDeque::with_capacity(64);
+        win.push_back((start, 0));
+        Self {
+            loaded: AtomicU64::new(0),
+            start,
+            last_emit_ms: AtomicU64::new(0),
+            total,
+            id: id.to_string(),
+            name: name.to_string(),
+            speed_win: Mutex::new(win),
+        }
+    }
+
     fn add(&self, n: u64) -> u64 {
         self.loaded.fetch_add(n, Ordering::Relaxed) + n
     }
 
-    /// 节流发进度（约 5 次/秒），速度按「已下载/耗时」算平均速度
+    /// 最近 ~3 秒的平均速度（字节/秒）
+    fn speed_now(&self, loaded: u64) -> u64 {
+        const WIN: Duration = Duration::from_secs(3);
+        let now = Instant::now();
+        let Ok(mut w) = self.speed_win.lock() else {
+            return 0;
+        };
+        w.push_back((now, loaded));
+        // 丢掉窗口外的旧采样，但至少留两个点用于差值
+        while w.len() > 2 && now.duration_since(w[0].0) > WIN {
+            w.pop_front();
+        }
+        let (t0, b0) = w[0];
+        let dt = now.duration_since(t0).as_secs_f64();
+        if dt < 0.3 {
+            return 0;
+        }
+        ((loaded.saturating_sub(b0)) as f64 / dt) as u64
+    }
+
+    /// 节流发进度（约 5 次/秒）
     fn emit(&self, app: &AppHandle, loaded: u64) {
         let now = self.start.elapsed().as_millis() as u64;
         let last = self.last_emit_ms.load(Ordering::Relaxed);
@@ -279,7 +320,7 @@ impl SegCtx {
         {
             return;
         }
-        let speed = (loaded as f64 / self.start.elapsed().as_secs_f64().max(0.001)) as u64;
+        let speed = self.speed_now(loaded);
         emit_progress(
             app,
             DlProgress {
@@ -293,12 +334,6 @@ impl SegCtx {
             },
         );
     }
-}
-
-fn part_path(dest: &Path, idx: usize) -> PathBuf {
-    let mut name = dest.file_name().map(|s| s.to_os_string()).unwrap_or_default();
-    name.push(format!(".part{idx}"));
-    dest.with_file_name(name)
 }
 
 /// 分段抓取 `[start, end]` 到 `part`，返回本片字节数
@@ -330,7 +365,15 @@ async fn fetch_range(
         let header = HeaderValue::from_str(&format!("bytes={from}-{end}"))
             .map_err(|e| format!("Range 头非法: {e}"))?;
 
-        let resp = match client.get(url).header(RANGE, header).send().await {
+        // 强制 HTTP/1.1，确保每个分片独占一条 TCP 连接（h2 多路复用会共享连接，
+        // 碰上按连接限速的加速节点等于没分片）
+        let resp = match client
+            .get(url)
+            .version(reqwest::Version::HTTP_11)
+            .header(RANGE, header)
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 last_err = format!("分片 {start}-{end} 请求失败: {e}");
@@ -392,73 +435,138 @@ async fn fetch_range(
     Err(last_err)
 }
 
-/// 多线程分片下载一个大文件
+/// 多线程分片下载一个大文件（动态区间分配）
 ///
-/// 把 `[0, total)` 切成 `segments` 段，用 `Range` 并发抓取，各写 `.partN`，
-/// 全部到齐后顺序合并成目标文件。弱网下单连接往往只有 100~200 KB/s，
-/// 分片后能明显跑满带宽。
+/// **自适应分片**：所有 worker 共享一个字节游标，每次领取的区间大小按
+/// `剩余量 / (worker 数 × 2)` 计算并夹在 `[128 KB, 4 MB]`：
+/// - 刚开始剩余多 → 每段几 MB，请求数少、开销低；
+/// - 越接近结尾段越小 → 最后 1 MB 会被切成 8 个 128 KB 段同时跑。
+///
+/// 多线程分片下载一个大文件（动态区间 + 多源并行）
+///
+/// **自适应分片**：所有 worker 共享一个字节游标，每次领取的区间大小按
+/// `剩余量 / (worker 数 × 2)` 计算并夹在 `[128 KB, 4 MB]`：
+/// - 刚开始剩余多 → 每段几 MB，请求数少、开销低；
+/// - 越接近结尾段越小 → 最后 1 MB 会被切成 8 个 128 KB 段同时跑。
+///
+/// **多源并行**：`urls` 里的每个源都独立限速，worker 轮流绑定不同源。
+/// 实测单个加速节点跑到几 MB 后就断崖（4 KB/s + 大量 read timeout），
+/// 换哪个分片算法都救不回来；把请求摊到多个域名上，各源配额独立，总吞吐直接叠加。
+///
+/// 分片文件用起始偏移命名（`<文件名>.part<start>`），合并时按偏移排序拼接，
+/// 所以动态分配也不会错位。代价是跨调用续传不成立（每次区间划分不同），
+/// 进入前会清掉旧分片；单片内部的断流续传仍然保留。
 ///
 /// 返回 `Err` 的两种情况由调用方回退到单流 `download_one`：
-/// - 文件太小（< 4 MB，分片反而更慢）
-/// - 源不支持 `Range`（探测请求没拿到 206）
+/// - 文件太小（< 2 MB，分片反而更慢）
+/// - 所有源都不支持 `Range`（探测请求没拿到 206）
 pub async fn download_multi(
     client: &Client,
     app: &AppHandle,
     task: &DlTask,
+    urls: &[String],
     total: u64,
     max_segments: usize,
 ) -> Result<PathBuf, String> {
-    /// 每片最小 2 MB：片太小握手开销占比高
-    const MIN_SEG: u64 = 2 * 1024 * 1024;
-    if total < MIN_SEG * 2 {
+    /// 小于这个尺寸不值得分片（一两次 Range 就完了）
+    const MIN_MULTI: u64 = 2 * 1024 * 1024;
+    /// 单段下限：再小的话请求头开销占比过高
+    const MIN_CHUNK: u64 = 128 * 1024;
+    /// 单段上限：太大则末段尾巴长
+    const MAX_CHUNK: u64 = 4 * 1024 * 1024;
+
+    if total < MIN_MULTI {
         return Err("文件较小，走单流下载".to_string());
     }
 
-    // 探测 Range 支持（请求第一个字节，期望 206 + Content-Range）
-    let probe = client
-        .get(&task.url)
-        .header(RANGE, HeaderValue::from_static("bytes=0-0"))
-        .send()
-        .await
-        .map_err(|e| format!("探测分段支持失败: {e}"))?;
-    if probe.status().as_u16() != 206 {
-        return Err(format!(
-            "该源不支持分段下载（HTTP {}）",
-            probe.status().as_u16()
-        ));
-    }
-    drop(probe);
-
-    let seg_count = ((total / MIN_SEG) as usize).clamp(2, max_segments.max(2));
-    let seg_size = total.div_ceil(seg_count as u64);
-    let ranges: Vec<(usize, u64, u64)> = (0..seg_count)
-        .map(|i| {
-            let start = i as u64 * seg_size;
-            let end = ((i as u64 + 1) * seg_size).min(total) - 1;
-            (i, start, end)
-        })
-        .filter(|(_, s, e)| e >= s)
-        .collect();
-
-    let ctx = Arc::new(SegCtx {
-        loaded: AtomicU64::new(0),
-        start: Instant::now(),
-        last_emit_ms: AtomicU64::new(0),
-        total,
-        id: task.id.clone(),
-        name: task.name.clone(),
+    // 并发探测各源是否支持 Range（请求第一个字节，期望 206）。
+    // 强制 HTTP/1.1：reqwest 对 https 会通过 ALPN 协商 h2，而 h2 的多路复用
+    // 会让多个 Range 请求挤在同一条 TCP 连接上——节点按连接限速，分片就白做了。
+    let probes = urls.iter().map(|u| {
+        let c = client.clone();
+        let u = u.clone();
+        async move {
+            let ok = c
+                .get(&u)
+                .version(reqwest::Version::HTTP_11)
+                .header(RANGE, HeaderValue::from_static("bytes=0-0"))
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .map(|r| r.status().as_u16() == 206)
+                .unwrap_or(false);
+            (u, ok)
+        }
     });
+    let mut usable: Vec<String> = futures_util::future::join_all(probes)
+        .await
+        .into_iter()
+        .filter(|(_, ok)| *ok)
+        .map(|(u, _)| u)
+        .collect();
+    if usable.is_empty() {
+        return Err("所有下载源都不支持分段下载".to_string());
+    }
+    let workers = max_segments.clamp(2, 16) as u64;
+    // 可用源不必多于 worker 数（否则有源分不到分片）
+    usable.truncate(workers as usize);
 
-    let mut handles = Vec::with_capacity(ranges.len());
-    for (idx, start, end) in &ranges {
+    // 分片文件名前缀：`<文件名>.part`
+    let part_prefix = task
+        .dest
+        .file_name()
+        .map(|s| format!("{}.part", s.to_string_lossy()))
+        .unwrap_or_default();
+
+    // 清掉旧分片：区间划分每次不同，残留的无法复用，只会污染合并
+    if !part_prefix.is_empty() {
+        if let Some(parent) = task.dest.parent() {
+            if let Ok(mut rd) = tokio::fs::read_dir(parent).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&part_prefix) {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+        }
+    }
+
+    let ctx = Arc::new(SegCtx::new(&task.id, &task.name, total));
+    let cursor = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::with_capacity(workers as usize);
+    for i in 0..workers {
         let client = client.clone();
         let app = app.clone();
         let ctx = ctx.clone();
-        let url = task.url.clone();
-        let part = part_path(&task.dest, *idx);
-        let (s, e) = (*start, *end);
+        let cursor = cursor.clone();
+        // 每个 worker 固定绑一个源，轮转分配：多域名 = 多份独立限速配额
+        let url = usable[(i as usize) % usable.len()].clone();
+        let dest = task.dest.clone();
+        let prefix = part_prefix.clone();
         handles.push(tokio::spawn(async move {
-            fetch_range(&client, &app, &ctx, &url, &part, s, e).await
+            loop {
+                // 原子领取一段 [start, end]；CAS 失败说明被别的 worker 抢了，重试
+                let (start, end) = loop {
+                    let cur = cursor.load(Ordering::Relaxed);
+                    if cur >= total {
+                        return Ok::<(), String>(());
+                    }
+                    let remaining = total - cur;
+                    let step = (remaining / (workers * 2))
+                        .clamp(MIN_CHUNK, MAX_CHUNK)
+                        .min(remaining);
+                    if cursor
+                        .compare_exchange(cur, cur + step, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        break (cur, cur + step - 1);
+                    }
+                };
+                let part = dest.with_file_name(format!("{prefix}{start}"));
+                fetch_range(&client, &app, &ctx, &url, &part, start, end).await?;
+            }
         }));
     }
 
@@ -480,29 +588,70 @@ pub async fn download_multi(
         }
     }
     if let Some(e) = err {
-        // 保留各分片：下次调用会接着已有的 `.partN` 续传，不必从头再来
+        // 清掉半成品分片，避免下次合并时混入
+        if let Some(parent) = task.dest.parent() {
+            if let Ok(mut rd) = tokio::fs::read_dir(parent).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&part_prefix) {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+        }
         return Err(e);
     }
 
-    // 合并分片
+    // 合并分片：按起始偏移排序后顺序拼接
     if let Some(parent) = task.dest.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("创建目录失败: {e}"))?;
     }
+    let mut parts: Vec<(u64, PathBuf)> = Vec::new();
+    if let Some(parent) = task.dest.parent() {
+        let mut rd = tokio::fs::read_dir(parent)
+            .await
+            .map_err(|e| format!("读取分片目录失败: {e}"))?;
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(rest) = name.strip_prefix(part_prefix.as_str()) {
+                if let Ok(start) = rest.parse::<u64>() {
+                    parts.push((start, entry.path()));
+                }
+            }
+        }
+    }
+    parts.sort_by_key(|(s, _)| *s);
+    if parts.is_empty() {
+        return Err("没有下载到任何分片".to_string());
+    }
+    if parts[0].0 != 0 {
+        return Err(format!("分片不连续：首个分片从 {} 开始", parts[0].0));
+    }
+
     let mut out = tokio::fs::File::create(&task.dest)
         .await
         .map_err(|e| format!("创建合并文件失败: {e}"))?;
-    for (idx, _, _) in &ranges {
-        let part = part_path(&task.dest, *idx);
-        let mut f = tokio::fs::File::open(&part)
+    for (i, (start, path)) in parts.iter().enumerate() {
+        // 本段应有的长度：到下一段起点，或文件末尾
+        let expect = match parts.get(i + 1) {
+            Some((next, _)) => next - start,
+            None => total - start,
+        };
+        let mut f = tokio::fs::File::open(path)
             .await
-            .map_err(|e| format!("打开分片失败: {e}"))?;
-        tokio::io::copy(&mut f, &mut out)
+            .map_err(|e| format!("打开分片 {start} 失败: {e}"))?;
+        let copied = tokio::io::copy(&mut f, &mut out)
             .await
-            .map_err(|e| format!("合并分片失败: {e}"))?;
+            .map_err(|e| format!("合并分片 {start} 失败: {e}"))?;
         drop(f);
-        let _ = tokio::fs::remove_file(&part).await;
+        let _ = tokio::fs::remove_file(path).await;
+        if copied != expect {
+            return Err(format!(
+                "分片 {start} 长度不符：期望 {expect} 字节，实际 {copied} 字节"
+            ));
+        }
     }
     out.flush().await.map_err(|e| e.to_string())?;
     drop(out);
