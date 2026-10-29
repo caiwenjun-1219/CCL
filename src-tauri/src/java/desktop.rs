@@ -23,6 +23,11 @@ pub fn supported_majors() -> &'static [u32] {
     SUPPORTED_MAJORS
 }
 
+/// 桌面端没有内置 JRE（内置包只打进 Android APK）
+pub fn bundled_java_major(_app: &tauri::AppHandle) -> Option<u32> {
+    None
+}
+
 /// 常见 JDK 安装目录
 fn scan_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![];

@@ -24,6 +24,20 @@ use desktop::StoragePerm;
 #[cfg(mobile)]
 use mobile::StoragePerm;
 
+/// APK assets 里是否存在某个内置资源（Android 专用，其余平台恒 false）
+pub fn has_asset<R: Runtime>(app: &tauri::AppHandle<R>, src: &str) -> bool {
+    StoragePerm::get(app).has_asset(src)
+}
+
+/// 把 APK assets 里的内置资源拷到磁盘（Android 专用）
+pub fn copy_asset<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    src: &str,
+    dest: &str,
+) -> std::result::Result<u64, String> {
+    StoragePerm::get(app).copy_asset(src, dest)
+}
+
 /// 初始化插件
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("ccl-android")

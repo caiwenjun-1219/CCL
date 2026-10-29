@@ -39,11 +39,13 @@ pub struct JavaEnv {
     pub source: String,
     /// 是否为 Android 上的 Pojav 格式 JRE
     pub is_android_jre: bool,
+    /// APK 里内置的 JRE 主版本（有则该版本首启无需联网下载）
+    pub bundled_major: Option<u32>,
 }
 
 /// 获取当前平台的 Java 运行环境信息
 #[tauri::command]
-pub fn java_env() -> JavaEnv {
+pub fn java_env(app: AppHandle) -> JavaEnv {
     JavaEnv {
         platform: if cfg!(target_os = "android") {
             "android".into()
@@ -53,6 +55,7 @@ pub fn java_env() -> JavaEnv {
         supported_majors: platform::supported_majors().to_vec(),
         source: platform::SOURCE_NAME.to_string(),
         is_android_jre: cfg!(target_os = "android"),
+        bundled_major: platform::bundled_java_major(&app),
     }
 }
 

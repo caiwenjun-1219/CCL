@@ -38,3 +38,11 @@ bundle/
 # Android 签名密钥与安装包产物（绝不入库）
 keys/
 *.apk
+
+# 内置到 APK 的 Java 运行时（体积大，从 jre_cache/ 同步，不入库）
+src-tauri/plugins/ccl-android/android/src/main/assets/jre/*.tar.xz
+jre_cache/
+diag_single/
+
+# APK 签名产物
+*.idsig

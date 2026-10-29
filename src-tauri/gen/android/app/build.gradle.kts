@@ -54,6 +54,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
+    // 内置 Java 运行时（assets/jre/*.tar.xz）已经是压缩格式，别再让 aapt2 白压一遍：
+    // 既省构建时间，也让首启解包能直接从 APK 里流式读取。
+    androidResources {
+        noCompress += "xz"
+    }
     buildFeatures {
         buildConfig = true
     }

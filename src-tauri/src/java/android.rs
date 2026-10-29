@@ -9,8 +9,14 @@
 //! ## 采用的方案（对齐 FCL）
 //!
 //! FCL 把 Android JRE 打包进 APK assets（`app_runtime/java/jre{8,17,21,25}/`），
-//! 首次启动解包 + 打补丁。我们走**运行时下载**同构的产物，来源用 EclipseJRE
-//! （FCL 同生态的 OpenJDK-Android 构建流水线），产物布局与 FCL 完全一致：
+//! 首次启动解包 + 打补丁。我们**同样把 Java 17 打进 APK**：插件模块的
+//! `android/src/main/assets/jre/` 下放 `jre17-universal.tar.xz` 与
+//! `jre17-bin-arm64.tar.xz`，首启由 Kotlin 侧用 AssetManager 拷到磁盘再解包，
+//! 全程不联网（见 [`install_bundled`]）。国内移动网络下从 GitHub Release
+//! 拉 27 MB 基本不可用（实测镜像单连接 10~120 KB/s 且频繁断流），内置是唯一稳的路。
+//!
+//! 其余版本（8/21/25）仍走运行时下载，来源用 EclipseJRE（FCL 同生态的
+//! OpenJDK-Android 构建流水线），产物布局与 FCL 完全一致：
 //!
 //! ```text
 //! jre{major}-universal.tar.xz     # 通用部分：conf/ legal/ lib/(非 native)
@@ -240,65 +246,79 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 /// 解开一个 `.tar.xz`：xz 解压 → tar 解包到 dest（保留符号链接）
 ///
 /// 纯 Rust 实现（`lzma-rs` + `tar`），不依赖 liblzma，Android 交叉编译无需 NDK 工具链。
+///
+/// 解压走「先落地成同目录临时 .tar 再解开」，而不是把整包塞进内存：
+/// JRE 17 的 universal 解压后约 180 MB，全量读进 Vec 在低端机上必 OOM。
 fn extract_tar_xz(tar_xz: &Path, dest: &Path) -> Result<(usize, usize), String> {
-    let f = std::fs::File::open(tar_xz).map_err(|e| format!("打开压缩包失败: {e}"))?;
-    let mut reader = BufReader::new(f);
-
-    // xz → tar 字节流
-    let mut tar_bytes: Vec<u8> = Vec::new();
-    lzma_rs::xz_decompress(&mut reader, &mut tar_bytes)
-        .map_err(|e| format!("xz 解压失败: {e}"))?;
-
-    let mut archive = tar::Archive::new(std::io::Cursor::new(tar_bytes));
-    let mut files = 0usize;
-    let mut links = 0usize;
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("读取 tar 失败: {e}"))?;
-    for entry in entries {
-        let mut entry = entry.map_err(|e| format!("读取 tar 条目失败: {e}"))?;
-        let path = entry
-            .path()
-            .map_err(|e| format!("tar 路径非法: {e}"))?
-            .into_owned();
-        // 防目录穿越：拒绝任何含 .. 或根分量的路径
-        if path.components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::ParentDir | std::path::Component::RootDir
-            )
-        }) {
-            continue;
-        }
-        let out = dest.join(&path);
-        let ftype = entry.header().entry_type();
-        if ftype.is_dir() {
-            let _ = std::fs::create_dir_all(&out);
-            continue;
-        }
-        if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if ftype.is_symlink() {
-            // Pojav 的 JRE 里 legal/ 下有 136 个相对符号链接（JDK 各模块的 LICENSE），
-            // 不还原会导致法律文件缺失，保留它们。
-            let target = entry
-                .link_name()
-                .map_err(|e| format!("符号链接读取失败: {e}"))?
-                .ok_or("符号链接缺少目标")?;
-            let _ = std::fs::remove_file(&out);
-            #[cfg(unix)]
-            {
-                let _ = std::os::unix::fs::symlink(&target, &out);
-            }
-            links += 1;
-            continue;
-        }
-        let mut o = std::fs::File::create(&out).map_err(|e| format!("创建文件失败: {e}"))?;
-        std::io::copy(&mut entry, &mut o).map_err(|e| format!("写入文件失败: {e}"))?;
-        files += 1;
+    let tmp_tar = tar_xz.with_extension("tar.tmp");
+    {
+        let f = std::fs::File::open(tar_xz).map_err(|e| format!("打开压缩包失败: {e}"))?;
+        let mut reader = BufReader::new(f);
+        let out = std::fs::File::create(&tmp_tar).map_err(|e| format!("创建临时文件失败: {e}"))?;
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, out);
+        lzma_rs::xz_decompress(&mut reader, &mut writer)
+            .map_err(|e| format!("xz 解压失败: {e}"))?;
+        use std::io::Write;
+        writer.flush().map_err(|e| format!("写入临时文件失败: {e}"))?;
     }
-    Ok((files, links))
+
+    let extract = |dest: &Path| -> Result<(usize, usize), String> {
+        let f = std::fs::File::open(&tmp_tar).map_err(|e| format!("打开 tar 失败: {e}"))?;
+        let mut archive = tar::Archive::new(BufReader::with_capacity(1 << 20, f));
+        let mut files = 0usize;
+        let mut links = 0usize;
+        let entries = archive
+            .entries()
+            .map_err(|e| format!("读取 tar 失败: {e}"))?;
+        for entry in entries {
+            let mut entry = entry.map_err(|e| format!("读取 tar 条目失败: {e}"))?;
+            let path = entry
+                .path()
+                .map_err(|e| format!("tar 路径非法: {e}"))?
+                .into_owned();
+            // 防目录穿越：拒绝任何含 .. 或根分量的路径
+            if path.components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::RootDir
+                )
+            }) {
+                continue;
+            }
+            let out = dest.join(&path);
+            let ftype = entry.header().entry_type();
+            if ftype.is_dir() {
+                let _ = std::fs::create_dir_all(&out);
+                continue;
+            }
+            if let Some(parent) = out.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if ftype.is_symlink() {
+                // Pojav 的 JRE 里 legal/ 下有 136 个相对符号链接（JDK 各模块的 LICENSE），
+                // 不还原会导致法律文件缺失，保留它们。
+                let target = entry
+                    .link_name()
+                    .map_err(|e| format!("符号链接读取失败: {e}"))?
+                    .ok_or("符号链接缺少目标")?;
+                let _ = std::fs::remove_file(&out);
+                #[cfg(unix)]
+                {
+                    let _ = std::os::unix::fs::symlink(&target, &out);
+                }
+                links += 1;
+                continue;
+            }
+            let mut o = std::fs::File::create(&out).map_err(|e| format!("创建文件失败: {e}"))?;
+            std::io::copy(&mut entry, &mut o).map_err(|e| format!("写入文件失败: {e}"))?;
+            files += 1;
+        }
+        Ok((files, links))
+    };
+
+    let r = extract(dest);
+    let _ = std::fs::remove_file(&tmp_tar);
+    r
 }
 
 /// 扫描已安装的 Android JRE
@@ -376,32 +396,18 @@ async fn download_verified(
                 &url,
                 &dl_path,
             );
-            // 优先多源并行分片：单个加速节点跑到几 MB 就会被限流/断连，
-            // 把分片摊到所有可用源上，各域名配额独立，总吞吐叠加。
-            // 分片失败（都不支持 Range / 大文件断流）则回退到单流下载。
-            let mut downloaded = false;
-            if entry.size >= 2 * 1024 * 1024 {
-                let urls: Vec<String> = prefixes
-                    .iter()
-                    .map(|p| release_url(p, file_name))
-                    .collect();
-                match downloader::download_multi(client, app, &task, &urls, entry.size, 8).await {
-                    Ok(_) => downloaded = true,
-                    Err(e) => last_err = format!("{}：{e}", source_label(prefix)),
+            // 单流 + Range 续传。
+            //
+            // 曾经用「8 线程多源分片」并测到 300 KB/s，但 2026-10 复测发现加速节点
+            // 改为**按连接限速**：单连接 122 KB/s，同一节点开 8 条连接反而掉到
+            // 10 KB/s 合计（每连接只分到一小片额度），而且多源混拼还会因为某个
+            // 节点忽略 Range 边界导致内容损坏。所以这里回归单流，弱网靠续传硬扛。
+            if let Err(e) = downloader::download_one(client, app, &task).await {
+                last_err = format!("{}：{e}", source_label(prefix));
+                if attempt < MAX_TRY {
+                    tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64)).await;
                 }
-            }
-            if !downloaded {
-                match downloader::download_one(client, app, &task).await {
-                    Ok(_) => downloaded = true,
-                    Err(e) => {
-                        last_err = format!("{}：{e}", source_label(prefix));
-                        if attempt < MAX_TRY {
-                            tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64))
-                                .await;
-                        }
-                        continue;
-                    }
-                }
+                continue;
             }
 
             // 大小校验：截断是最常见的失败形式，先于 sha256 拦截
@@ -453,10 +459,102 @@ async fn download_verified(
     ))
 }
 
+/// APK 里内置的 JRE 主版本（目前只打包了 Java 17）
+const BUNDLED_MAJOR: u32 = 17;
+
+/// 内置 JRE 在 assets 里的两个归档包名
+fn bundled_asset_names(major: u32, arch: &str) -> (String, String) {
+    (
+        format!("jre/jre{major}-universal.tar.xz"),
+        format!("jre/jre{major}-bin-{arch}.tar.xz"),
+    )
+}
+
+/// 当前设备有没有可用的内置 JRE；有则返回其主版本
+pub fn bundled_java_major(app: &AppHandle) -> Option<u32> {
+    let (uni, bin) = bundled_asset_names(BUNDLED_MAJOR, device_arch());
+    if ccl_android::has_asset(app, &uni) && ccl_android::has_asset(app, &bin) {
+        Some(BUNDLED_MAJOR)
+    } else {
+        None
+    }
+}
+
+/// 内置解压的进度事件（首启向导复用 download-progress 的展示逻辑）
+fn emit_bundle_progress(app: &AppHandle, major: u32, loaded: u64, finished: bool) {
+    let _ = app.emit(
+        "download-progress",
+        crate::downloader::DlProgress {
+            id: format!("java-{major}-bundle"),
+            name: format!("Java {major}（APK 内置）"),
+            loaded,
+            total: 100,
+            speed: 0,
+            finished,
+            error: None,
+        },
+    );
+}
+
+/// 从 APK assets 安装内置 JRE（对齐 FCL：首启只解包，不联网）
+///
+/// 返回 `Ok(None)` 表示这个版本没有内置包，调用方应退回在线下载。
+async fn install_bundled(app: &AppHandle, major: u32) -> Result<Option<JavaInfo>, String> {
+    if bundled_java_major(app) != Some(major) {
+        return Ok(None);
+    }
+    let arch = device_arch();
+    let dest = settings::java_dir(app).join(format!("jre{major}-{arch}"));
+
+    // 装过且完整 → 直接复用（重装/重进向导都走这里，秒过）
+    if let Some(info) = probe_jre(&dest) {
+        if info.major == major {
+            let _ = app.emit("java-installed", &info.version);
+            return Ok(Some(info));
+        }
+    }
+
+    let (uni, bin) = bundled_asset_names(major, arch);
+    let _ = std::fs::remove_dir_all(&dest);
+    std::fs::create_dir_all(&dest).map_err(|e| format!("创建 Java 目录失败: {e}"))?;
+    let tmp = settings::java_dir(app).join(".tmp");
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
+
+    let app2 = app.clone();
+    let dest2 = dest.clone();
+    let names = vec![uni, bin];
+    let info = tauri::async_runtime::spawn_blocking(move || -> Result<JavaInfo, String> {
+        for (idx, name) in names.iter().enumerate() {
+            let file = name.rsplit('/').next().unwrap_or(name).to_string();
+            emit_bundle_progress(&app2, major, (idx as u64) * 50, false);
+            let local = tmp.join(&file);
+            let _ = std::fs::remove_file(&local);
+            ccl_android::copy_asset(&app2, name, &local.to_string_lossy())
+                .map_err(|e| format!("释放内置 Java 组件 {file} 失败：{e}"))?;
+            extract_tar_xz(&local, &dest2)?;
+            let _ = std::fs::remove_file(&local);
+            emit_bundle_progress(&app2, major, (idx as u64 + 1) * 50, false);
+        }
+        finalize_jre(
+            &app2,
+            &dest2,
+            major,
+            "Eclipse JRE for Android（APK 内置）".to_string(),
+        )
+    })
+    .await
+    .map_err(|e| format!("内置 Java 安装线程异常: {e}"))??;
+
+    emit_bundle_progress(app, major, 100, true);
+    let _ = app.emit("java-installed", &info.version);
+    Ok(Some(info))
+}
+
 /// 下载并安装 Android JRE
 ///
-/// 流程：拉清单 → 按设备 ABI 选架构包 → 下载 universal + bin 归档 → 逐个 sha256 校验
-/// → 叠加解压到 `java/jre{major}-{arch}/`。
+/// 流程：**优先用 APK 内置的 JRE**（本地解包，零联网）→ 没有内置包时再走
+/// 「拉清单 → 按设备 ABI 选架构包 → 下载 universal + bin 归档 → 逐个 sha256 校验
+/// → 叠加解压到 `java/jre{major}-{arch}/`」。
 pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, String> {
     if !SUPPORTED_MAJORS.contains(&major) {
         return Err(format!(
@@ -467,6 +565,10 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
                 .collect::<Vec<_>>()
                 .join(" / ")
         ));
+    }
+
+    if let Some(info) = install_bundled(&app, major).await? {
+        return Ok(info);
     }
 
     let client = downloader::http_client();
@@ -517,6 +619,23 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
     }
     let _ = installed;
 
+    // 校验产物完整性 + 打可执行位 + 解 pack200 + 读版本号
+    let info = finalize_jre(&app, &dest, major, format!(
+        "Eclipse JRE for Android ({} · build {})",
+        arch.arch,
+        manifest.build_id.chars().take(8).collect::<String>()
+    ))?;
+    let _ = app.emit("java-installed", &info.version);
+    Ok(info)
+}
+
+/// 解压完成后的收尾：完整性校验 → 可执行位 → 解 pack200 → 读 `release` 版本号
+fn finalize_jre(
+    app: &AppHandle,
+    dest: &Path,
+    major: u32,
+    vendor: String,
+) -> Result<JavaInfo, String> {
     // 校验产物完整性：JRE 必须有 bin/java 与 libjvm.so
     let java_bin = dest.join("bin").join("java");
     // Java 17+ 布局：lib/server/libjvm.so；Java 8 布局：lib/<arch>/server/libjvm.so
@@ -534,11 +653,11 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
     }
 
     // Android 上 JRE 的 bin/ 启动器与 lib/*.so 需要可执行权限
-    set_exec_recursive(&dest)?;
+    set_exec_recursive(dest)?;
 
     // Java 8 的 universal 里是 .pack（如 rt.jar.pack），需要随包自带的 unpack200 解包成 .jar。
     // Java 17/21/25 没有 .pack，此步为空操作。这与 FCL 的 patchJava/unpack 行为一致。
-    unpack_packs(&dest)?;
+    unpack_packs(dest)?;
 
     // 取版本号
     let version = std::fs::read_to_string(dest.join("release"))
@@ -551,17 +670,12 @@ pub async fn download_java(app: AppHandle, major: u32) -> Result<JavaInfo, Strin
         .unwrap_or_else(|| format!("{major}.0.0+0"));
     // 以 release 里的真实版本号反推主版本，避免与请求值不一致
     let real_major = parse_major(&version).unwrap_or(major);
-
-    let _ = app.emit("java-installed", &version);
+    let _ = app;
     Ok(JavaInfo {
         path: java_bin.to_string_lossy().to_string(),
         major: real_major,
         version,
-        vendor: format!(
-            "Eclipse JRE for Android ({} · build {})",
-            arch.arch,
-            manifest.build_id.chars().take(8).collect::<String>()
-        ),
+        vendor,
         managed: true,
     })
 }

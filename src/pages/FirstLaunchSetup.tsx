@@ -44,8 +44,17 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
   const [javaProgress, setJavaProgress] = useState(0); // 0~1
   const [javaStat, setJavaStat] = useState({ loaded: 0, total: 0, speed: 0 });
   const [javaError, setJavaError] = useState<string | null>(null);
+  // APK 里内置的 JRE 主版本：有则该版本首启只需本地解包，不用联网
+  const [bundledMajor, setBundledMajor] = useState<number | null>(null);
 
   const unlisteners = useRef<UnlistenFn[]>([]);
+
+  useEffect(() => {
+    api
+      .javaEnv()
+      .then((env) => setBundledMajor(env.bundled_major ?? null))
+      .catch(() => setBundledMajor(null));
+  }, []);
 
   // 桌面端直接跳过；移动端首启检测权限
   useEffect(() => {
@@ -244,10 +253,16 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
             <div>
               <Download size={28} className="text-ccl-primary mb-3" />
               <h1 className="text-[18px] font-bold mb-2">下载 Java 运行时</h1>
-              <p className="text-[13px] text-ccl-muted leading-relaxed mb-4">
+              <p className="text-[13px] text-ccl-muted leading-relaxed mb-2">
                 选择要下载的 Java 版本（现代版 Minecraft 推荐 Java 17，旧版 Mod
                 可能需要 Java 8）。下载完成后即可安装游戏。
               </p>
+              {bundledMajor !== null && (
+                <p className="text-[12px] text-ccl-success leading-relaxed mb-4">
+                  Java {bundledMajor} 已内置在安装包内，安装时只需本地解包，不需要联网。
+                </p>
+              )}
+              {bundledMajor === null && <div className="mb-2" />}
               <div className="flex flex-wrap gap-2 mb-4">
                 {JAVA_MAJORS.map((m) => (
                   <button
@@ -273,9 +288,11 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
                   </div>
                   <div className="flex items-center justify-between text-[11px] text-ccl-muted mt-1">
                     <span>
-                      {javaStat.total > 0
+                      {javaStat.total >= 1024
                         ? `${fmtMB(javaStat.loaded)} / ${fmtMB(javaStat.total)}`
-                        : "正在获取下载信息…"}
+                        : javaStat.total > 0
+                          ? "正在释放内置运行时…"
+                          : "正在获取下载信息…"}
                       {javaStat.speed > 0 && ` · ${fmtSpeed(javaStat.speed)}`}
                     </span>
                     <span>
@@ -307,7 +324,9 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
                   ) : (
                     <Download size={15} />
                   )}
-                  下载 Java {javaMajor}
+                  {bundledMajor === javaMajor
+                    ? `安装内置 Java ${javaMajor}`
+                    : `下载 Java ${javaMajor}`}
                 </button>
               )}
 

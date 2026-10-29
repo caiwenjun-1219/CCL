@@ -35,4 +35,14 @@ impl StoragePerm {
     pub async fn request(&self) -> bool {
         true
     }
+
+    /// 桌面端没有内置资源（内置 JRE 只打进 Android APK）
+    pub fn has_asset(&self, _src: &str) -> bool {
+        false
+    }
+
+    /// 桌面端没有内置资源
+    pub fn copy_asset(&self, _src: &str, _dest: &str) -> std::result::Result<u64, String> {
+        Err("内置资源仅在 Android 上可用".to_string())
+    }
 }

@@ -123,6 +123,8 @@ export interface JavaEnv {
   supported_majors: number[];
   source: string;
   is_android_jre: boolean;
+  /** APK 内置的 JRE 主版本（有则该版本首启免下载） */
+  bundled_major: number | null;
 }
 
 export interface Account {

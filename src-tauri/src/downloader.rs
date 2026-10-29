@@ -387,6 +387,28 @@ async fn fetch_range(
                 resp.status().as_u16()
             ));
         }
+        // 部分加速节点会把 Range 请求当成整包请求处理：返回 206 但起点/终点
+        // 与请求不符，甚至一路把剩余全量灌完。不校验就会把别的分片区域写脏，
+        // 表现为「大小对得上、sha256 却永远不对」。
+        if let Some(cr) = resp
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+        {
+            let head = cr.split('/').next().unwrap_or("");
+            let start_got = head
+                .trim_start_matches("bytes")
+                .trim()
+                .split('-')
+                .next()
+                .and_then(|s| s.trim().parse::<u64>().ok());
+            if start_got != Some(from) {
+                return Err(format!(
+                    "分片 {start}-{end} 起点不符（请求 {from}，返回 {}）",
+                    start_got.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
+                ));
+            }
+        }
 
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -397,14 +419,26 @@ async fn fetch_range(
 
         let mut stream = resp.bytes_stream();
         let mut broken = false;
-        while let Some(chunk) = stream.next().await {
+        // 硬性截断到本分片长度：服务端多给的一律丢弃，绝不越界写脏下一个分片
+        let mut remain = want - have;
+        while remain > 0 {
+            let Some(chunk) = stream.next().await else {
+                break;
+            };
             match chunk {
                 Ok(bytes) => {
-                    file.write_all(&bytes)
-                        .await
-                        .map_err(|e| format!("写入分片失败: {e}"))?;
-                    let loaded = ctx.add(bytes.len() as u64);
-                    ctx.emit(app, loaded);
+                    let take = (bytes.len() as u64).min(remain) as usize;
+                    if take > 0 {
+                        file.write_all(&bytes[..take])
+                            .await
+                            .map_err(|e| format!("写入分片失败: {e}"))?;
+                        remain -= take as u64;
+                        let loaded = ctx.add(take as u64);
+                        ctx.emit(app, loaded);
+                    }
+                    if take < bytes.len() {
+                        break; // 收到超出请求长度的数据，丢掉尾巴
+                    }
                 }
                 Err(e) => {
                     last_err = format!("分片 {start}-{end} 传输中断: {e}");
@@ -534,6 +568,7 @@ pub async fn download_multi(
 
     let ctx = Arc::new(SegCtx::new(&task.id, &task.name, total));
     let cursor = Arc::new(AtomicU64::new(0));
+    let sources = Arc::new(usable);
 
     let mut handles = Vec::with_capacity(workers as usize);
     for i in 0..workers {
@@ -541,8 +576,10 @@ pub async fn download_multi(
         let app = app.clone();
         let ctx = ctx.clone();
         let cursor = cursor.clone();
-        // 每个 worker 固定绑一个源，轮转分配：多域名 = 多份独立限速配额
-        let url = usable[(i as usize) % usable.len()].clone();
+        let sources = sources.clone();
+        // 每个 worker 起始绑一个源（轮转分配）：多域名 = 多份独立限速配额。
+        // 该源报错（限流、起点不符、断流重试耗尽）时自动换下一个源接着下同一段。
+        let mut ui = (i as usize) % sources.len();
         let dest = task.dest.clone();
         let prefix = part_prefix.clone();
         handles.push(tokio::spawn(async move {
@@ -565,7 +602,25 @@ pub async fn download_multi(
                     }
                 };
                 let part = dest.with_file_name(format!("{prefix}{start}"));
-                fetch_range(&client, &app, &ctx, &url, &part, start, end).await?;
+                // 该段在多个源上轮着试：任一源报错就换源接着下同一段
+                // （分片文件按起始偏移命名，换源续传不会错位）
+                let mut last_err = String::new();
+                let mut done = false;
+                for _ in 0..sources.len() {
+                    match fetch_range(&client, &app, &ctx, &sources[ui], &part, start, end).await {
+                        Ok(_) => {
+                            done = true;
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = e;
+                            ui = (ui + 1) % sources.len();
+                        }
+                    }
+                }
+                if !done {
+                    return Err(last_err);
+                }
             }
         }));
     }

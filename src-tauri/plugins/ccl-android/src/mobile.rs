@@ -69,3 +69,51 @@ impl<R: Runtime> StoragePerm<R> {
 struct PermResponse {
     granted: bool,
 }
+
+impl<R: Runtime> StoragePerm<R> {
+    /// assets 里是否存在某个内置资源（如 `jre/jre17-bin-arm64.tar.xz`）
+    pub fn has_asset(&self, src: &str) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            let args = serde_json::json!({ "src": src, "dest": "" });
+            self.0
+                .run_mobile_plugin::<ExistsResponse>("hasBundledAsset", args)
+                .map(|r| r.exists)
+                .unwrap_or(false)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = src;
+            false
+        }
+    }
+
+    /// 把 assets 里的内置资源流式拷到 `dest`（APK 内的 assets 无法被 Rust 直接读）
+    pub fn copy_asset(&self, src: &str, dest: &str) -> std::result::Result<u64, String> {
+        #[cfg(target_os = "android")]
+        {
+            let args = serde_json::json!({ "src": src, "dest": dest });
+            self.0
+                .run_mobile_plugin::<CopyResponse>("copyBundledAsset", args)
+                .map(|r| r.bytes)
+                .map_err(|e| format!("{e:?}"))
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = (src, dest);
+            Err("内置资源仅在 Android 上可用".to_string())
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ExistsResponse {
+    #[serde(default)]
+    exists: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct CopyResponse {
+    #[serde(default)]
+    bytes: u64,
+}
