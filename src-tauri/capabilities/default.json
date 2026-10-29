@@ -17,6 +17,8 @@
     "store:default",
     "dialog:default",
     "dialog:allow-open",
-    "opener:default"
+    "opener:default",
+    "ccl-android:allow-check-storage-permission",
+    "ccl-android:allow-request-storage-permission"
   ]
 }
