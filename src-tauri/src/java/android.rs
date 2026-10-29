@@ -48,9 +48,15 @@ const GH_RELEASE: &str =
 
 /// 内置 GitHub 加速前缀（按优先级尝试）。空串 = 直连 GitHub。
 ///
-/// 2026-10 实测：`gh-proxy.com` 稳定；`ghproxy.net` 次之；直连基本不可用
-/// （curl 报 `Recv failure: Connection was reset`），保留作为最后兜底。
-const BUILTIN_PREFIXES: &[&str] = &["https://gh-proxy.com/", "https://ghproxy.net/", ""];
+/// - `axisnow.gh-proxy.org`：gh-proxy 的三网优选节点（移动/联通/电信），国内首选
+/// - `gh-proxy.com` / `ghproxy.net`：备用公共节点
+/// - 空串：直连兜底（2026-10 实测国内基本被重置，仅作最后尝试）
+const BUILTIN_PREFIXES: &[&str] = &[
+    "https://axisnow.gh-proxy.org/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "",
+];
 
 /// Android 端支持的 JRE 主版本（对应 EclipseJRE 构建的 8/17/21/25）
 pub const SUPPORTED_MAJORS: &[u32] = &[8, 17, 21, 25];
@@ -206,7 +212,7 @@ async fn pick_manifest(
         }
     }
     Err(format!(
-        "请求 JRE 清单失败，所有下载源均不可用：\n  {}\n可在「设置 → 网络 → GitHub 加速」里填写自己的加速地址（如 https://gh-proxy.com/）。",
+        "请求 JRE 清单失败，所有下载源均不可用：\n  {}\n可在「设置 → 网络 → GitHub 加速」里填写自己的加速地址（如 https://axisnow.gh-proxy.org/）。",
         errors.join("\n  ")
     ))
 }
@@ -341,10 +347,11 @@ pub fn scan_javas(app: AppHandle) -> Vec<JavaInfo> {
 
 /// 下载一个 JRE 组件并校验 sha256 / 大小，失败自动重试
 ///
-/// GitHub Release 资产在弱网下可能被截断，因此：
-/// 1. 先比对 `size`（清单里给了精确字节数），不一致直接判定失败
-/// 2. 再比对 `sha256`
-/// 3. 最多重试 3 次，每次都删掉残留的半截文件重新下
+/// 弱网下断流很常见，因此：
+/// 1. **保留已下载的分片**，重试时由 `try_download` 用 `Range` 续传，
+///    这样进度条只会往前走，不会归零（旧版每次重试都删文件重下，大包永远下不完）
+/// 2. 只有「文件比期望大」或「sha256 不符」这类无法续传的情况才删文件重下
+/// 3. 单个源内重试 4 次，仍不成再换下一个加速源
 async fn download_verified(
     client: &reqwest::Client,
     app: &AppHandle,
@@ -354,8 +361,8 @@ async fn download_verified(
     dest_dir: &Path,
     prefixes: &[String],
 ) -> Result<PathBuf, String> {
-    /// 单个源内的重试次数（大小/sha 不符时原地重下，多半是断流）
-    const MAX_TRY: u32 = 2;
+    /// 单个源内的重试次数（续传，所以多试几次很便宜）
+    const MAX_TRY: u32 = 4;
     let file_name = &entry.name;
     let dl_path = dest_dir.join(file_name);
     let mut last_err = String::new();
@@ -363,28 +370,42 @@ async fn download_verified(
     for (si, prefix) in prefixes.iter().enumerate() {
         let url = release_url(prefix, file_name);
         for attempt in 1..=MAX_TRY {
-            let _ = std::fs::remove_file(&dl_path);
             let task = DlTask::new(
                 &format!("java-{major}-{idx}"),
                 &format!("Java {major}（{file_name}）"),
                 &url,
                 &dl_path,
             );
-            match downloader::download_one(client, app, &task).await {
-                Ok(_) => {}
-                Err(e) => {
-                    last_err = format!("{}：{e}", source_label(prefix));
-                    if attempt < MAX_TRY {
-                        tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64))
-                            .await;
+            // 优先多线程分片下载：弱网下单连接只有百来 KB/s，分片能跑满带宽。
+            // 分片失败（源不支持 Range / 大文件断流）则回退到单流下载。
+            let mut downloaded = false;
+            if entry.size >= 4 * 1024 * 1024 {
+                match downloader::download_multi(client, app, &task, entry.size, 8).await {
+                    Ok(_) => downloaded = true,
+                    Err(e) => last_err = format!("{}：{e}", source_label(prefix)),
+                }
+            }
+            if !downloaded {
+                match downloader::download_one(client, app, &task).await {
+                    Ok(_) => downloaded = true,
+                    Err(e) => {
+                        last_err = format!("{}：{e}", source_label(prefix));
+                        if attempt < MAX_TRY {
+                            tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64))
+                                .await;
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
 
             // 大小校验：截断是最常见的失败形式，先于 sha256 拦截
             let actual_size = std::fs::metadata(&dl_path).map(|m| m.len()).unwrap_or(0);
             if entry.size > 0 && actual_size != entry.size {
+                // 比期望小 = 还没下完，保留分片下一轮续传；比期望大 = 数据是脏的，删掉重来
+                if actual_size > entry.size {
+                    let _ = std::fs::remove_file(&dl_path);
+                }
                 last_err = format!(
                     "{}：{file_name} 大小不符（期望 {} 字节，实际 {actual_size} 字节）",
                     source_label(prefix),
@@ -399,6 +420,8 @@ async fn download_verified(
             // sha256 校验
             let actual = sha256_file(&dl_path)?;
             if !actual.eq_ignore_ascii_case(&entry.sha256) {
+                // 内容不对（可能是镜像返回的错误页），续传没有意义，删掉整包重下
+                let _ = std::fs::remove_file(&dl_path);
                 last_err = format!(
                     "{}：{file_name} 校验失败（期望 sha256 {}，实际 {actual}）",
                     source_label(prefix),
@@ -418,7 +441,7 @@ async fn download_verified(
         }
     }
 
-    let _ = std::fs::remove_file(&dl_path);
+    // 保留 .tmp 里的分片：用户重新点「下载」时可以从断点续传，不必从 0 开始
     Err(format!(
         "Java {major} 组件 {file_name} 下载失败（已尝试 {} 个源）：{last_err}",
         prefixes.len()

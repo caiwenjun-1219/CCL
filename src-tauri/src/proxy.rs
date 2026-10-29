@@ -239,10 +239,15 @@ pub fn build_proxy() -> Option<Proxy> {
 }
 
 /// 构造带代理的 HTTP 客户端
+///
+/// `read_timeout` 是**空闲读超时**（60 秒收不到任何字节才判定断流），
+/// 不能设成整体超时——大文件（如 22 MB 的 JRE 包）在 150 KB/s 下需要 2 分钟以上，
+/// 整体超时会把它拦腰截断，导致进度条反复归零重下。
 pub fn client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .user_agent("CwjCraftLauncher/1.0 (+https://caiwenjun.top)")
-        .connect_timeout(Duration::from_secs(15));
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(60));
     if let Some(p) = build_proxy() {
         builder = builder.proxy(p);
     }
@@ -254,6 +259,7 @@ pub fn plain_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("CwjCraftLauncher/1.0 (+https://caiwenjun.top)")
         .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(60))
         .build()
         .unwrap_or_default()
 }

@@ -20,6 +20,18 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  */
 const JAVA_MAJORS = [8, 17, 21, 25];
 
+/** 字节 → "12.3 MB" */
+function fmtMB(bytes: number): string {
+  if (bytes <= 0) return "0 MB";
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+/** 字节/秒 → "320 KB/s" */
+function fmtSpeed(bps: number): string {
+  if (bps >= 1048576) return `${(bps / 1048576).toFixed(1)} MB/s`;
+  return `${Math.max(1, Math.round(bps / 1024))} KB/s`;
+}
+
 export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
   const [permGranted, setPermGranted] = useState(false);
@@ -30,6 +42,7 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
   const [javaBusy, setJavaBusy] = useState(false);
   const [javaDone, setJavaDone] = useState(false);
   const [javaProgress, setJavaProgress] = useState(0); // 0~1
+  const [javaStat, setJavaStat] = useState({ loaded: 0, total: 0, speed: 0 });
   const [javaError, setJavaError] = useState<string | null>(null);
 
   const unlisteners = useRef<UnlistenFn[]>([]);
@@ -53,29 +66,40 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
   // 下载进度监听（聚合 java-<major>-* 任务）
   useEffect(() => {
     let cancelled = false;
-    const tasks = new Map<string, { loaded: number; total: number; finished: boolean }>();
+    const tasks = new Map<string, { loaded: number; total: number; speed: number; finished: boolean }>();
 
     const setup = async () => {
       const off1 = await listen<{
         id: string;
         loaded: number;
         total: number;
+        speed: number;
         finished: boolean;
       }>("download-progress", (e) => {
         const id = e.payload.id;
         if (!id.startsWith(`java-${javaMajor}-`)) return;
+        const p = e.payload;
+        const prev = tasks.get(id);
+        // 后端「完成」事件会带 loaded=0/total=0（下载坞靠它让进度条消失），
+        // 这里必须沿用已完成任务的满额值，否则两个包之间总进度会掉回去。
+        const total = p.total > 0 ? p.total : prev?.total ?? 0;
+        const loaded = p.finished ? (total > 0 ? total : prev?.loaded ?? 0) : p.loaded;
         tasks.set(id, {
-          loaded: e.payload.loaded,
-          total: e.payload.total,
-          finished: e.payload.finished,
+          loaded,
+          total,
+          speed: p.finished ? 0 : p.speed ?? 0,
+          finished: p.finished,
         });
-        let loaded = 0;
-        let total = 0;
-        for (const t of tasks.values()) {
-          loaded += t.loaded;
-          total += t.total;
+        let l = 0;
+        let t = 0;
+        let sp = 0;
+        for (const task of tasks.values()) {
+          l += task.loaded;
+          t += task.total;
+          sp += task.speed;
         }
-        if (total > 0) setJavaProgress(Math.min(1, loaded / total));
+        setJavaStat({ loaded: l, total: t, speed: sp });
+        if (t > 0) setJavaProgress(Math.min(1, l / t));
       });
 
       const off2 = await listen("java-installed", () => {
@@ -112,6 +136,7 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
     setJavaBusy(true);
     setJavaError(null);
     setJavaProgress(0);
+    setJavaStat({ loaded: 0, total: 0, speed: 0 });
     try {
       await api.downloadJava(javaMajor);
       // 成功兜底（java-installed 事件也会触发）
@@ -246,8 +271,16 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
                       style={{ width: `${Math.round(javaProgress * 100)}%` }}
                     />
                   </div>
-                  <div className="text-[11px] text-ccl-muted mt-1 text-right">
-                    {Math.round(javaProgress * 100)}%
+                  <div className="flex items-center justify-between text-[11px] text-ccl-muted mt-1">
+                    <span>
+                      {javaStat.total > 0
+                        ? `${fmtMB(javaStat.loaded)} / ${fmtMB(javaStat.total)}`
+                        : "正在获取下载信息…"}
+                      {javaStat.speed > 0 && ` · ${fmtSpeed(javaStat.speed)}`}
+                    </span>
+                    <span>
+                      {javaProgress >= 0.999 ? "正在解压安装…" : `${Math.round(javaProgress * 100)}%`}
+                    </span>
                   </div>
                 </div>
               )}

@@ -42,6 +42,7 @@ const defaultSettings: AppSettings = {
   version_isolation: 4,
   custom_folders: [],
   proxy: "auto",
+  github_mirror: "",
 };
 
 export const useApp = create<AppState>((set, get) => ({
