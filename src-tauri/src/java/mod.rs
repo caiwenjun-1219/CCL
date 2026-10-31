@@ -20,6 +20,9 @@ pub mod embedded;
 /// LWJGL 移植层（M2）：Pojav 的 natives + fork 版 GLFW classes。
 /// 官方 LWJGL 的 linux natives 依赖 libGL/libX11，Android 上加载不了。
 pub mod lwjgl;
+/// Surface 桥接（M3）：把 ART 的 `android.view.Surface` 变成
+/// `libpojavexec` 能用的 `ANativeWindow*`，`glfwInit` 的前置条件。
+pub mod surface;
 
 #[cfg(not(target_os = "android"))]
 pub mod desktop;

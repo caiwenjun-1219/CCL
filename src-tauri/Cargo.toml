@@ -50,6 +50,9 @@ tar = "0.4"
 # 而我们是运行时 dlopen 拿 JNI_CreateJavaVM 函数指针。
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
+# tao 在启动时把 ART 的 JavaVM 与 Activity 存进这里；
+# 我们需要 ART 的 env 来把 Surface 变成 ANativeWindow（JVM 自己的 env 认不了 ART 对象）。
+ndk-context = "0.1"
 
 [profile.release]
 codegen-units = 16

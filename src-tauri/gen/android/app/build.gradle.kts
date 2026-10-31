@@ -54,6 +54,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
+    // 把 src-tauri/android/shim 里的 Java 源码也编进 dex。
+    //
+    // 那份代码本来是给内嵌 JVM 用的（打成 shim.jar 压 classpath），但
+    // `libpojavexec` 的 JNI_OnLoad 在 **ART** 里要 FindClass
+    // "org/lwjgl/glfw/CallbackBridge" 并缓存 accessAndroidClipboard /
+    // onGrabStateChanged / onDirectInputEnable 三个回调 —— ART 的 classloader
+    // 只看 dex，看不到 jar，所以同一份源码必须在两边都存在。
+    // （Pojav 也是这么干的：这个类在 APK 里有一份、在 JVM 里有一份。）
+    sourceSets {
+        getByName("main") {
+            java.srcDir("../../../android/shim")
+        }
+    }
     // 内置 Java 运行时（assets/jre/*.tar.xz）已经是压缩格式，别再让 aapt2 白压一遍：
     // 既省构建时间，也让首启解包能直接从 APK 里流式读取。
     androidResources {

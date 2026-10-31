@@ -449,6 +449,7 @@ dependencies = [
  "jni",
  "lzma-rs",
  "md-5",
+ "ndk-context",
  "percent-encoding",
  "reqwest 0.12.28",
  "serde",

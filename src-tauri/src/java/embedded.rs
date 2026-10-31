@@ -477,7 +477,10 @@ pub fn build_config(app: &AppHandle, jre_home: PathBuf) -> Result<VmConfig, Stri
         classpath,
         library_path,
         lwjgl_path,
-        extra_opts: vec![],
+        // MC 1.17+ 要 GL 3.2，Android 上唯一能提供的是 LTW（GLES→GL 翻译层）。
+        // LWJGL 会在 createCapabilities 时按这个名字去 loadNative，必须提前定死；
+        // 探针里也设了一遍，但真实启动走的是这里。
+        extra_opts: vec!["-Dorg.lwjgl.opengl.libname=libltw.so".to_string()],
     })
 }
 

@@ -104,6 +104,19 @@ public class CallbackBridge {
         }
     }
 
+    /**
+     * 原生侧要求开启 / 关闭「直接输入」（手柄直通）。
+     *
+     * so 的 `JNI_OnLoad` 会用 `GetStaticMethodID(..., "onDirectInputEnable", "()V")`
+     * 缓存这个方法，**方法不存在就会让 JNI_OnLoad 失败**（进而整个库加载失败）。
+     * 我们现在没有手柄直通实现，留空即可。
+     */
+    public static void onDirectInputEnable() {
+        if (INPUT_DEBUG_ENABLED) {
+            System.out.println("[shim] onDirectInputEnable");
+        }
+    }
+
     public static void sendData(int eventType, String data) {
         nativeSendData(INPUT_DEBUG_ENABLED, eventType, data);
     }

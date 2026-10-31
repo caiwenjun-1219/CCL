@@ -185,6 +185,9 @@ export interface LwjglReport {
   vm_error: string;
   classpath: string;
   library_path: string;
+  /** Surface 是否已交给 libpojavexec（M3） */
+  surface_ok: boolean;
+  surface_info: string;
   probe: string;
   steps_ok: number;
   steps_fail: number;

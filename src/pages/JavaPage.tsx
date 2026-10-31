@@ -368,6 +368,10 @@ export default function JavaPage() {
                   mono
                 />
                 <Line label="检查项" value={`${lw.steps_ok} 通过 / ${lw.steps_fail} 失败`} />
+                <Line
+                  label="Surface"
+                  value={lw.surface_ok ? lw.surface_info : lw.surface_info || "未桥接"}
+                />
                 {!lw.vm_ok && <Line label="JVM" value={lw.vm_error} />}
               </div>
               {lw.probe && (

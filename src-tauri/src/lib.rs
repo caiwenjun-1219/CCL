@@ -129,8 +129,8 @@ pub fn run() {
             let s = settings::load(app.handle());
             proxy::set_proxy(&s.proxy);
 
-            // M2 联调入口：数据目录下存在 `auto-probe` 文件时，启动 6 秒后自动跑一遍
-            // 内嵌 JVM / LWJGL 探针并打到 logcat。
+            // 联调入口：数据目录下存在 `auto-probe` 文件时，启动 6 秒后自动跑一遍
+            // 内嵌 JVM / LWJGL / 首帧探针并打到 logcat。
             //
             // 为什么不用按钮：MuMu 多 display 下 uiautomator 抓不到应用层，点不准。
             // 生产环境不会有这个文件，等于零成本；要在设备上验证就
@@ -145,18 +145,19 @@ pub fn run() {
                         let r = tauri::async_runtime::block_on(java::lwjgl::run(h));
                         match r {
                             Ok(r) => {
-                                println!("[M2] verdict={}", r.verdict);
+                                println!("[probe] verdict={}", r.verdict);
                                 println!(
-                                    "[M2] dir={} abi={} so={} ms={} cached={}",
+                                    "[probe] dir={} abi={} so={} ms={} cached={}",
                                     r.dir, r.abi, r.native_count, r.prepare_ms, r.prepared_cached
                                 );
-                                println!("[M2] vm_ok={} vm_err={}", r.vm_ok, r.vm_error);
-                                println!("[M2] cp={}", r.classpath);
+                                println!("[probe] vm_ok={} vm_err={}", r.vm_ok, r.vm_error);
+                                println!("[probe] surface_ok={} info={}", r.surface_ok, r.surface_info);
+                                println!("[probe] cp={}", r.classpath);
                                 for line in r.probe.lines() {
-                                    println!("[M2] probe {line}");
+                                    println!("[probe] probe {line}");
                                 }
                             }
-                            Err(e) => println!("[M2] ERR {e}"),
+                            Err(e) => println!("[probe] ERR {e}"),
                         }
                     });
                 }

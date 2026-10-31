@@ -55,6 +55,11 @@ pub struct LwjglReport {
     /// 建 VM 用的 java.library.path
     pub library_path: String,
 
+    /// Surface 是否已桥接给 libpojavexec（M3）
+    pub surface_ok: bool,
+    /// Surface 尺寸 / 失败原因
+    pub surface_info: String,
+
     /// 探针原始输出（`key=value` 逐行，`=` 后带 `!` 表示该步抛异常）
     pub probe: String,
     /// 通过 / 失败的步骤数
@@ -106,7 +111,7 @@ const SHIM_ASSET: &str = "lwjgl/shim.jar";
 /// 只按「文件在不在」判断复用会在换资源后踩坑：新打的 jar 没被释放，
 /// 设备上跑的还是上一版（我们就是这样被上一版 shim 坑过一次）。
 /// 改动 assets 里的任何文件时**把这个数字加一**，标记对不上就整体重解。
-const BUNDLE_REV: u32 = 2;
+const BUNDLE_REV: u32 = 4;
 
 #[cfg(target_os = "android")]
 pub fn ensure(app: &AppHandle) -> Result<LwjglFiles, String> {
@@ -234,6 +239,22 @@ pub async fn run(app: AppHandle) -> Result<LwjglReport, String> {
             .map(|p| p.to_path_buf())
             .ok_or_else(|| format!("无法从 {} 推出 JRE 根目录", info.path))?;
 
+        // ---- 把 Surface 交给 libpojavexec
+        //
+        // 顺序很重要：必须在任何 pojavInit 之前完成。pojavInit 直接
+        // ANativeWindow_acquire 那个全局指针，指针为空就是原生层崩溃。
+        let sinfo = crate::java::surface::attach(&files.dir, 5000);
+        r.surface_ok = sinfo.ok;
+        r.surface_info = if sinfo.ok {
+            format!("{}x{}（{} ms）", sinfo.width, sinfo.height, sinfo.elapsed_ms)
+        } else {
+            sinfo.error.clone()
+        };
+        println!(
+            "[ccl-lwjgl] Surface ok={} {}",
+            sinfo.ok, r.surface_info
+        );
+
         // ---- 建 VM（或复用）
         let (vm, report) = embedded::ensure_vm_for(&app, jre_home);
         println!(
@@ -259,6 +280,28 @@ pub async fn run(app: AppHandle) -> Result<LwjglReport, String> {
                 return Ok(r);
             }
         };
+
+        // 告诉探针 Surface 到底通没通 —— 不通就不能碰 glfwInit（会直接 SIGSEGV）。
+        // 走静态字段而不是 JVM 启动参数：VM 只能建一次，参数没法事后改。
+        let info_str = match env.new_string(r.surface_info.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("[ccl-lwjgl] 造 surfaceInfo 字符串失败：{e}");
+                return Ok(r);
+            }
+        };
+        let info_obj: jni::objects::JObject = info_str.into();
+        if let Err(e) = env.call_static_method(
+            "ccl/lwjgl/Bridge",
+            "setSurface",
+            "(ZLjava/lang/String;)V",
+            &[
+                jni::objects::JValue::Bool(sinfo.ok as u8),
+                jni::objects::JValue::Object(&info_obj),
+            ],
+        ) {
+            println!("[ccl-lwjgl] 写 Bridge.surfaceReady 失败：{e}（探针会按未桥接处理）");
+        }
 
         let text = match call_probe(&mut env) {
             Ok(t) => t,
@@ -338,18 +381,42 @@ fn summarize(text: &str) -> String {
     let core_ok = get("lwjgl.version").map(|v| !v.starts_with('!')).unwrap_or(false);
     let glfw_cls = get("glfw.class").map(|v| !v.starts_with('!')).unwrap_or(false);
 
+    let init = get("glfw.init");
+    let frame = get("gl.frame");
+    let caps = get("gl.caps");
+    let gl_ver = get("gl.version").unwrap_or("?");
+    let renderer = get("gl.renderer").unwrap_or("?");
+
+    // 「画完一帧」必须真的没有 GL 错误。上下文没 current 时 glClear 之类
+    // 是静默无操作的，只看「没抛异常」会得到假阳性。
+    let frame_ok = frame.map(|v| v.contains("已清屏")).unwrap_or(false);
+    let caps_ok = caps.map(|v| v.starts_with("ok ")).unwrap_or(false);
+
+    if init == Some("true") && frame_ok && caps_ok {
+        return format!(
+            "渲染链路已打通：glfwInit → 建窗口 → GL 上下文 → 清屏 + 交换缓冲全部成功。\n\
+             {}\nGL_VERSION={gl_ver}\nGL_RENDERER={renderer}",
+            caps.unwrap_or("")
+        );
+    }
+    if init == Some("true") {
+        return format!(
+            "glfwInit 成功（说明 Surface 桥接生效），但后续出帧没走通：{}\nGL_VERSION={gl_ver}",
+            frame.unwrap_or("未测")
+        );
+    }
+    if let Some(v) = get("render").filter(|v| v.starts_with("skipped")) {
+        return format!("Surface 还没接上，渲染步骤整体跳过（{v}）。");
+    }
+
     if native_ok && core_ok && glfw_cls {
-        let init = get("glfw.init").unwrap_or("未测");
         let glfw_ver = get("glfw.version").unwrap_or("?");
-        if init == "true" {
-            format!("LWJGL 移植层完全可用：natives 加载、lwjgl 核心、GLFW {glfw_ver} 初始化全部通过。")
-        } else if init.starts_with("skipped") {
-            format!(
-                "LWJGL 移植层可用：natives 加载、lwjgl 核心、fork 版 GLFW {glfw_ver} 均正常。\
-                 下一步（M3）把 Android 的 Surface 接进 GLFW，就能真正建窗口出画面。"
-            )
-        } else {
-            format!("LWJGL 移植层基本可用，但 glfwInit 未成功：{init}")
+        match init {
+            Some(v) if !v.starts_with('!') => {
+                format!("LWJGL 移植层可用：natives、lwjgl 核心、GLFW {glfw_ver} 均正常（glfwInit={v}）。")
+            }
+            Some(v) => format!("LWJGL 移植层基本可用，但 glfwInit 失败：{v}"),
+            None => format!("LWJGL 移植层可用：natives、lwjgl 核心、GLFW {glfw_ver} 均正常。"),
         }
     } else if native_ok && core_ok {
         format!(
