@@ -245,6 +245,26 @@ pub fn run() {
                             Err(e) => println!("[plan] ERR {e}"),
                         }
                     });
+                } else if data.join("auto-touch").exists() {
+                    // M4-b-3 真机验证：只把 GameSurface 置顶，**不建 JVM、不加载
+                    // pojavexec**，专门验证「手指 → SurfaceView.onTouchEvent →
+                    // CallbackBridge」这条 View 层链路。
+                    //
+                    // 为什么要单独一个模式：探针（auto-probe）虽然也置顶，但它跑
+                    // GL 之后 5~90 秒必被 HotSpot 的 SIGABRT 带走（Pointer tag
+                    // was truncated），窗口期太短，根本来不及注入触摸。
+                    // 这条路径不碰 JVM，进程可以一直挂着。
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        // 只用 h 保住 AppHandle 生命周期，避免窗口提前销毁
+                        drop(h);
+                        println!(
+                            "[ccl-touch] 置顶：{}",
+                            java::surface::prepare_game_surface(8000)
+                        );
+                        println!("[ccl-touch] 就绪，等触摸（不建 JVM）");
+                    });
                 } else if data.join("auto-embed").exists() {
                     // 只建内嵌 VM + 跑 CCL/tc 下的测试类，不加载 libpojavexec。
                     // 用来二分「内嵌 HotSpot 本身」vs「pojavexec/bytehook 的介入」。

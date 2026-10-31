@@ -21,7 +21,13 @@ android {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "com.caiwenjun.ccl"
         minSdk = 24
-        targetSdk = 37
+        // 与上游一致取 33（PojavLauncher 就是这一档），注意：
+        // **这不是 SIGABRT 的解药**。曾怀疑是 Android 14 起的 native heap
+        // pointer tagging（targetSdk ≥ 34 默认开启）导致 HotSpot 的 malloc
+        // 指针 tag 被截断，实测 targetSdk 33 后崩溃照旧（同样 abort、同样
+        // 0x7306... 地址、同样 VM Thread），假设已排除。保留 33 只是为了
+        // 少一个变量、贴近上游行为。
+        targetSdk = 33
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }

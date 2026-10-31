@@ -239,6 +239,17 @@ pub async fn run(app: AppHandle) -> Result<LwjglReport, String> {
             .map(|p| p.to_path_buf())
             .ok_or_else(|| format!("无法从 {} 推出 JRE 根目录", info.path))?;
 
+        // ---- 把 SurfaceView 顶到最上层，再等一块能用的 Surface
+        //
+        // M4-b-3 真机验证：探针原来走 `attach`（不置顶），WebView 盖在
+        // SurfaceView 上面，手指的触摸全被 WebView 吃掉，`CCLInput` 一条都
+        // 打不出来 —— 于是「View 层能不能收到触摸」这件事永远测不了。
+        // 置顶后 GameSurface 既可见又可点，探针还能一直挂着，不怕 MC 崩。
+        println!(
+            "[ccl-lwjgl] 置顶：{}",
+            crate::java::surface::prepare_game_surface(8000)
+        );
+
         // ---- 把 Surface 交给 libpojavexec
         //
         // 顺序很重要：必须在任何 pojavInit 之前完成。pojavInit 直接

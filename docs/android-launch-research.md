@@ -1053,7 +1053,54 @@ je   返回
 但不在 `RegisterNatives` 表里，从 Kotlin 调必然是 `UnsatisfiedLinkError`
 （so 是 `dlopen` 进来的，没和 ClassLoader 关联），只能 `dlsym` 直调。
 
-### 7.6 还没做的
+### 7.6 SIGABRT 的真机二分（2026-10-31 夜，vivo V2313A / Android 14）
+
+**现象**（每次都一模一样，只有一个变量在变）：
+
+```
+signal 6 (SIGABRT)  tid …(VM Thread)
+Abort message: 'Pointer tag for 0x7306xxxxxxxx was truncated'
+#00 abort+168 (libc)
+#01 free+108  (libc)
+#02.. libjvm.so
+```
+
+崩溃地址始终落在 `0x73065a8e40 ~ 0x73066510b0` 这个约 1 MB 的窗口里、每次
+略增；线程永远是 **VM Thread**（JVM 里唯一做 GC 的线程）。scudo 认为
+`free()` 收到的指针 top byte 被抹掉了（malloc 返回的是 `0xb4000073…`，
+free 传进去的变成 `0x0000007306…`）。
+
+**已排除的假设**（每条都单独打包、装机、跑过）：
+
+| 假设 | 做法 | 结果 |
+| --- | --- | --- |
+| `-Xmx512m` 太小 | — | 无关（崩溃与堆大小无关，地址不在 Java 堆区） |
+| 压缩指针截断 64 位指针 | `-XX:-UseCompressedOops -XX:-UseCompressedClassPointers` | ✗ 照崩，PC 完全相同 |
+| C2 编译器生成坏码 | `-XX:TieredStopAtLevel=1`（只 C1） | ✗ 照崩，只是从 5 秒延迟到 86 秒 |
+| Android 14 的 native heap pointer tagging（targetSdk ≥ 34） | `targetSdk 37 → 33` 重打包 | ✗ 照崩（Android 11 起 Scudo 对所有进程都用固定 tag `0xb4`，与 targetSdk 无关） |
+| 某版 JRE 的 build 有问题 | 把 `jre21-arm64` 移出扫描目录，改用设备上的 `jre17-arm64` | ✗ 17 也崩，同样 abort |
+| debuggable 包被 malloc-debug 注入 | 查 logcat / `getprop` | ✗ 无 `libc_malloc_debug` / heapprofd 痕迹 |
+
+**唯一有效的二分**：
+
+| 模式 | 做了什么 | 结果 |
+| --- | --- | --- |
+| `auto-embed` | 只建内嵌 VM + 跑 `T.main`（**不加载** `libpojavexec`、不碰 GL） | ✅ 90 秒稳定，`T.main` 正常返回 |
+| `auto-probe` | 加载 `libpojevec` + `libltw`，建 GLFW 窗口、跑 GL 初始化 | ❌ 5~90 秒内必崩 |
+
+结论：**内嵌 HotSpot 本身在 ART 同进程里是稳的**，崩溃由「pojavexec/LWJGL/
+GL 这一段」引入。下一步二分方向（还没做）：
+
+1. `auto-probe` 但**不建 GLFW 窗口**（只 attach + `glfwInit`）→ 分开「pojevec
+   加载」与「GL 调用」；
+2. `auto-probe` + `-Xint`（关掉 JIT）→ 看是否与 C1 生成的 native 调用桩有关；
+3. 单独跑一个「只 `dlopen libltw` + `eglCreateContext`」的最小用例。
+
+**教训（写给以后的自己）**：这些崩溃在 5 秒内必现，所以**别再用 MC 去试**——
+探针 10 秒能复现的问题，用 MC 要等 40 秒解包 + 建 VM。反过来，探针日志很短，
+容易被系统日志刷掉（Play 服务一秒钟能刷几千行），关键结论要**当场 grep 存文件**。
+
+### 7.7 还没做的
 
 - 虚拟按键（跳跃/潜行/打开背包）——现在只能靠手势摸到「移动 + 左右键 + 滚轮」
 - 键盘输入（聊天、命令）：`nativeSendChar` 已在类里声明，缺一个输入法桥
