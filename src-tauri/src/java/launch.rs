@@ -434,6 +434,10 @@ pub fn start(app: &AppHandle, instance_id: &str) -> Result<StartReport, String> 
         return Err(format!("Surface 桥接失败：{}", surface.error));
     }
 
+    // M4-b-3：so 已经在 ART 里加载好了，现在才敢告诉它「输入可以开始」。
+    // 不开这个开关，所有输入事件都会在 native 侧第一道门被静默丢掉。
+    println!("[launch] 输入开关：{}", crate::java::surface::enable_input());
+
     // plan 算出来的 JVM 参数（-Xmx / -Djna.tmpdir / libltw 等）必须在这里注进去：
     // 建 VM 是唯一能让这些 -D 生效的时机。
     let (vm, report) = crate::java::embedded::ensure_vm_for_launch(

@@ -166,6 +166,32 @@ pub fn run() {
                         }
                     });
                 } else if data.join("auto-probe").exists() {
+                    // M4-b-3 联调：`input-test` 存在时，等探针把 GLFW 窗口建好，
+                    // 再从 **ART 侧**（Kotlin）发一串输入。JVM 侧的探针负责收 ——
+                    // 两边是同一个进程里的两个 VM，靠 `pojav_environ` 这份共享状态通信。
+                    //
+                    // 9 秒是量出来的：启动 → 6 秒等待 → 解包（已缓存）→ attach
+                    // → 建 VM，实测到 `glfw.window` 约在 7 秒。
+                    if data.join("input-test").exists() {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(9));
+                            // 关键顺序：`glfwInit`（= pojavInit）会把 pojav_environ
+                            // 重新初始化，**之前设的 input_ready 会被冲掉**。
+                            // 所以开关必须在窗口建好之后再开一次。
+                            println!(
+                                "[ccl-input] 重开输入开关：{}",
+                                java::surface::enable_input()
+                            );
+                            // 先用「直调 C 函数」发一个可区分的坐标，再看 ART 侧
+                            // 注册的 native 发的值能不能盖掉它 —— 二分用
+                            println!(
+                                "[ccl-input] {}",
+                                java::surface::debug_send_cursor(321.0, 123.0)
+                            );
+                            let r = java::surface::input_self_test();
+                            println!("[ccl-input] ART 自检：{r}");
+                        });
+                    }
                     let h = app.handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_secs(6));

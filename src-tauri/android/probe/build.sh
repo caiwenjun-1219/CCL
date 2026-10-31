@@ -17,18 +17,21 @@ JAVAC="$JDK/bin/javac"
 JAR="$JDK/bin/jar"
 
 # --release 8：设备上可能是 JRE 8 / 17 / 21，8 的字节码全都能吃
+# 第二个参数是额外 classpath：探针要用真正的 GLFW 回调类（`Proxy` 假回调的
+# `address()` 是 0，等于没注册 —— M4-b-3 踩过这个坑）
 build() {
-  local name="$1" srcdir="$2"
+  local name="$1" srcdir="$2" extra_cp="${3:-}"
   local tmp
   tmp="$(mktemp -d)"
   # 编译失败必须直接失败：之前 javac 报错被吞掉，只留下一个 314 字节的空 jar，
   # 设备上跑的是「类不存在」，排查方向全错。
-  "$JAVAC" --release 8 -encoding UTF-8 -nowarn -d "$tmp" $(find "$srcdir" -name '*.java') ||
+  "$JAVAC" --release 8 -encoding UTF-8 -nowarn ${extra_cp:+-cp "$extra_cp"} -d "$tmp" \
+    $(find "$srcdir" -name '*.java') ||
     { echo "javac 失败：$srcdir" >&2; rm -rf "$tmp"; exit 1; }
   "$JAR" --create --file "$ASSETS/$name" -C "$tmp" .
   rm -rf "$tmp"
   printf '%-12s %s 字节\n' "$name" "$(stat -c%s "$ASSETS/$name")"
 }
 
-build probe.jar "$HERE"
+build probe.jar "$HERE" "$ASSETS/lwjgl-classes.jar"
 build shim.jar "$HERE/../shim"

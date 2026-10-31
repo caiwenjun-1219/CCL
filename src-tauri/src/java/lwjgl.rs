@@ -255,6 +255,12 @@ pub async fn run(app: AppHandle) -> Result<LwjglReport, String> {
             sinfo.ok, r.surface_info
         );
 
+        // so 加载完才敢开输入通道（M4-b-3）。探针里也开，是为了让
+        // `input-test` 那条自检链路和真启动走同一套前置条件。
+        if sinfo.ok {
+            println!("[ccl-lwjgl] 输入开关：{}", crate::java::surface::enable_input());
+        }
+
         // ---- 建 VM（或复用）
         let (vm, report) = embedded::ensure_vm_for(&app, jre_home);
         println!(

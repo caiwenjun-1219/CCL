@@ -213,6 +213,80 @@ public final class Probe {
             return "ok OpenGL32=" + gl32 + " OpenGL33=" + gl33;
         });
 
+        // ---- 5. 输入通路（M4-b-3）----
+        //
+        // 这一组只回答一个问题：**触摸应该按绝对坐标发，还是按增量发？**
+        //
+        // 答案取决于 fork 版 GLFW 的两个 native 的语义：
+        //   glfwGetCursorPos  —— 读回「stub 里记的光标位置」
+        //   glfwSetCursorPos  —— MC 每帧抓鼠标时会调它把自己「摆回屏幕中心」
+        //
+        // 如果 setCursorPos 是**空操作**，MC 的 delta 就等于「我们两次发的值之差」，
+        // 我们发绝对坐标即可；如果它**真的写回**，那 MC 每帧都会归中，我们必须
+        // 按「中心 + 增量」发。两种做法在对方场景下都会让视角乱飞，所以必须实测。
+        step("input.setcursor", () -> {
+            if (window[0] == 0L) {
+                return "跳过（没有窗口）";
+            }
+            cls("org.lwjgl.glfw.GLFW")
+                    .getMethod("glfwSetCursorPos", long.class, double.class, double.class)
+                    .invoke(null, window[0], 123.0, 456.0);
+            double[] xy = readCursor(window[0]);
+            boolean wrote = Math.abs(xy[0] - 123.0) < 0.5 && Math.abs(xy[1] - 456.0) < 0.5;
+            return (wrote ? "写回生效" : "空操作") + " 读回=" + fmt(xy[0]) + "," + fmt(xy[1]);
+        });
+
+        // 真正的判据：**ART 侧**发的输入能不能出现在 JVM 侧的 GLFW 回调里。
+        //
+        // 注意这里不能自己发 —— 这些 native 只在 ART 的 `JNI_OnLoad` 里注册过，
+        // JVM 侧那份 `CallbackBridge` 上根本没有绑定（实测 `UnsatisfiedLinkError`）。
+        // 所以由 Kotlin 的 `GameSurface.inputSelfTest()` 在别的线程发，
+        // 这里只管收。
+        step("input.callbacks", () -> {
+            if (window[0] == 0L) {
+                return "跳过（没有窗口）";
+            }
+            installInputCallbacks(window[0]);
+            return "ok 已注册 cursor/button/scroll";
+        });
+
+        step("input.listen", () -> {
+            if (window[0] == 0L) {
+                return "跳过（没有窗口）";
+            }
+            INPUT_EVENTS.clear();
+            Class<?> glfw = cls("org.lwjgl.glfw.GLFW");
+            java.lang.reflect.Method poll = glfw.getMethod("glfwPollEvents");
+            long deadline = System.currentTimeMillis() + LISTEN_MS;
+            while (System.currentTimeMillis() < deadline) {
+                poll.invoke(null);
+                if (!INPUT_EVENTS.isEmpty()) {
+                    // 再poll几轮，把同批事件收齐
+                    for (int i = 0; i < 5; i++) {
+                        Thread.sleep(30);
+                        poll.invoke(null);
+                    }
+                    break;
+                }
+                Thread.sleep(20);
+            }
+            return INPUT_EVENTS.isEmpty()
+                    ? "等了 " + LISTEN_MS + " ms 一条回调都没收到"
+                    : "收到 " + INPUT_EVENTS.size() + " 条: " + join(INPUT_EVENTS, 6);
+        });
+
+        // 说明：`glfwGetCursorPos` 读的是 `glfwSetCursorPos` 写进去的那个值，
+        // 输入事件**不会**改它（事件走回调，见上一步），所以这里保留只为
+        // 记录「set 写回生效」这个语义结论。
+        step("input.readback", () -> {
+            if (window[0] == 0L) {
+                return "跳过（没有窗口）";
+            }
+            double[] xy = readCursor(window[0]);
+            return "光标=" + fmt(xy[0]) + "," + fmt(xy[1])
+                    + "（这是 glfwSetCursorPos 写的值；事件到没到看 input.listen）";
+        });
+
         // GL_VERSION / GL_RENDERER / GL_VENDOR / GL_SHADING_LANGUAGE_VERSION
         step("gl.version", () -> glString("org.lwjgl.opengl.GL11", 0x1F02));
         step("gl.renderer", () -> glString("org.lwjgl.opengl.GL11", 0x1F01)
@@ -275,6 +349,108 @@ public final class Probe {
                     + "in vec4 vColor;\n"
                     + "out vec4 fragColor;\n"
                     + "void main() { fragColor = vColor; }\n";
+
+    // =====================================================================
+    // M4-b-3：输入通路
+    // =====================================================================
+
+    /** 回调里记下的事件（跨线程写，用同步列表） */
+    private static final java.util.List<String> INPUT_EVENTS =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+
+    /**
+     * 回调代理的强引用。
+     *
+     * GLFW 只把 native 函数指针存下来，**不持有 Java 对象**；本地引用一回收，
+     * 回调触发时就是野指针。必须挂住，直到进程结束。
+     */
+    private static final java.util.List<Object> KEEP = new java.util.ArrayList<Object>();
+
+    /** 等 ART 侧发输入的最长时间 */
+    private static final long LISTEN_MS = 15000L;
+
+    /** `glfwGetCursorPos(win, double[], double[])`，返回 {x, y} */
+    private static double[] readCursor(long win) throws Throwable {
+        double[] x = {0.0};
+        double[] y = {0.0};
+        cls("org.lwjgl.glfw.GLFW")
+                .getMethod("glfwGetCursorPos", long.class, double[].class, double[].class)
+                .invoke(null, win, x, y);
+        return new double[]{x[0], y[0]};
+    }
+
+    private static String fmt(double v) {
+        return String.format(java.util.Locale.US, "%.1f", v);
+    }
+
+    private static String join(java.util.List<String> list, int max) {
+        StringBuilder b = new StringBuilder();
+        int n = 0;
+        synchronized (list) {
+            for (String s : list) {
+                if (n++ > 0) {
+                    b.append(" | ");
+                }
+                b.append(s);
+                if (n >= max) {
+                    break;
+                }
+            }
+            if (list.size() > max) {
+                b.append(" …(共 ").append(list.size()).append(')');
+            }
+        }
+        return b.toString();
+    }
+
+    /**
+     * 注册三个**真正的** GLFW 回调对象。
+     *
+     * 不能拿 `java.lang.reflect.Proxy` 假装实现 `GLFWCursorPosCallbackI` ——
+     * LWJGL 传给 native 的是 `callback.address()`，代理对象没有原生跳板，
+     * 返回 0，于是 `nglfwSetCursorPosCallback` 里存下来的是 NULL：
+     *
+     * ```asm
+     * movq %rcx, 0x271f8(%rax)    ; pojav_environ->cursor_pos_callback = ptr
+     * ```
+     *
+     * 而 `critical_send_cursor_pos` 第一行就是
+     * `if (cursor_pos_callback == NULL) return;`
+     * —— **没有回调，输入事件在 native 侧就被丢光了**，现象是「发也发了、
+     * 一切 ok、就是没反应」。（这正是 M4-b-3 卡了半天的地方。）
+     */
+    private static void installInputCallbacks(long win) {
+        CursorCb cursor = new CursorCb();
+        ButtonCb button = new ButtonCb();
+        ScrollCb scroll = new ScrollCb();
+        KEEP.add(cursor);
+        KEEP.add(button);
+        KEEP.add(scroll);
+        org.lwjgl.glfw.GLFW.glfwSetCursorPosCallback(win, cursor);
+        org.lwjgl.glfw.GLFW.glfwSetMouseButtonCallback(win, button);
+        org.lwjgl.glfw.GLFW.glfwSetScrollCallback(win, scroll);
+    }
+
+    static final class CursorCb extends org.lwjgl.glfw.GLFWCursorPosCallback {
+        @Override
+        public void invoke(long window, double xpos, double ypos) {
+            INPUT_EVENTS.add("cursor " + fmt(xpos) + " " + fmt(ypos));
+        }
+    }
+
+    static final class ButtonCb extends org.lwjgl.glfw.GLFWMouseButtonCallback {
+        @Override
+        public void invoke(long window, int button, int action, int mods) {
+            INPUT_EVENTS.add("button " + button + " " + action);
+        }
+    }
+
+    static final class ScrollCb extends org.lwjgl.glfw.GLFWScrollCallback {
+        @Override
+        public void invoke(long window, double xoffset, double yoffset) {
+            INPUT_EVENTS.add("scroll " + fmt(xoffset) + " " + fmt(yoffset));
+        }
+    }
 
     /** 从 `Bridge.surfaceInfo`（形如 `1440x2560（2 ms）`）里取宽高 */
     private static int[] surfaceSize() {

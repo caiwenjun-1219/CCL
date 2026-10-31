@@ -50,6 +50,18 @@ public class CallbackBridge {
     public static final boolean INPUT_DEBUG_ENABLED =
             Boolean.parseBoolean(System.getProperty("glfwstub.debugInput", "false"));
 
+    /**
+     * 鼠标是否被游戏「抓走」（= 游戏内视角模式）。
+     *
+     * 由 {@link #onGrabStateChanged} 维护，**触摸层靠它决定光标怎么发**：
+     * 抓取时游戏每帧都会把光标摆回屏幕中心（`glfwSetCursorPos` 实测会写回），
+     * 所以只能发「中心 + 增量」；没抓取时（菜单里）要发绝对坐标。
+     *
+     * 注意本类被**同时**编进 APK 的 dex（ART 用）和 `shim.jar`（内嵌 JVM 用），
+     * 所以这里不能引用任何 Android API —— JVM 侧没有 `android.*`。
+     */
+    public static volatile boolean grabbed;
+
     // ---- v3 的 RegisterNatives 表（8 项，签名与 so 内完全一致）----
     public static native boolean nativeSendChar(char codePoint);
 
@@ -99,6 +111,7 @@ public class CallbackBridge {
 
     /** 鼠标锁定（grab）状态变化通知，用于显隐 UI 层。 */
     public static void onGrabStateChanged(boolean grabbed) {
+        CallbackBridge.grabbed = grabbed;
         if (INPUT_DEBUG_ENABLED) {
             System.out.println("[shim] onGrabStateChanged " + grabbed);
         }

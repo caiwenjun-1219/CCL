@@ -1,13 +1,20 @@
 package com.caiwenjun.ccl
 
 import android.app.Activity
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import org.lwjgl.glfw.CallbackBridge
+import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * 游戏画面用的 SurfaceView（M3 里程碑）
@@ -95,6 +102,14 @@ object GameSurface {
             Log.i(TAG, "SurfaceView 以「置顶」模式创建（会盖住 WebView）")
         }
         this.overlay = overlay
+
+        // M4-b-3：SurfaceView 默认**不吃触摸**（不可点击），置顶后事件会直接
+        // 穿透到下面的 WebView，游戏收不到任何输入。必须显式打开。
+        view.isClickable = true
+        view.isFocusable = true
+        view.isFocusableInTouchMode = true
+        view.setOnTouchListener { v, ev -> handleTouch(v, ev) }
+
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 surface = holder.surface
@@ -290,4 +305,301 @@ object GameSurface {
 
     @JvmStatic
     fun isOverlay(): Boolean = overlay
+
+    // =======================================================================
+    // M4-b-3：触摸 → GLFW 输入
+    // =======================================================================
+    //
+    // 直接把事件发给 **ART 侧**的 `CallbackBridge`（`org.lwjgl.glfw` 包下那个
+    // Java 类）。这些 native 是 `libpojavexec` 在 ART 的 `JNI_OnLoad` 里注册的，
+    // 内嵌 JVM 那份类上没有绑定（探针实测 `UnsatisfiedLinkError`），所以
+    // **不能**绕道 Rust 去调 JVM 侧的类。
+    //
+    // ## 坐标语义（探针实测，见 docs/android-launch-research.md）
+    //
+    // fork 版 GLFW 的 `glfwSetCursorPos` **真的写回**（读回 = 写入值）。
+    // 而 MC 在抓鼠标（游戏内）时每帧都会把光标摆回屏幕中心，所以：
+    //
+    //   - 抓鼠标（游戏内）：发「中心 + 本次手指增量」，游戏算出 delta = 增量
+    //   - 没抓（菜单里）：发绝对坐标，GUI 的光标在哪就点哪
+    //
+    // MC 的 `MouseHandler` 在一帧内会把多次 onMove 的 delta **累加**，
+    // 帧末才摆回中心，所以「每个事件都发中心+增量」不会丢样。
+    //
+    // ## 手势
+    //
+    // | 手势 | 行为 |
+    // | --- | --- |
+    // | 单指拖动 | 移动指针（游戏内 = 转视角） |
+    // | 单指轻点 | 左键点击 |
+    // | 单指按住 | 左键按住（挖方块 / 连续攻击） |
+    // | 双指轻点 | 右键（放置方块 / 使用） |
+    // | 双指上下滑 | 滚轮（切物品栏） |
+    // | 三指轻点 | ESC（打开游戏菜单） |
+
+    private const val TOUCH_TAG = "CCLInput"
+
+    /** 判定「点」而不是「拖」的位移阈值（像素） */
+    private const val TAP_SLOP = 22f
+
+    /** 点按的最长时长；超过就算长按 */
+    private const val TAP_MAX_MS = 300L
+
+    /** 长按多久开始按住左键 */
+    private const val LONG_PRESS_MS = 380L
+
+    /** 双指滑动多少像素算一格滚轮 */
+    private const val SCROLL_STEP = 70f
+
+    /** 菜单里移动指针的灵敏度（1 = 手指走多远光标走多远） */
+    private const val SENS_CURSOR = 1.15f
+
+    /** 游戏内转视角的灵敏度 */
+    private const val SENS_LOOK = 1.6f
+
+    private val ui = Handler(Looper.getMainLooper())
+
+    private var downX = 0f
+    private var downY = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var downAt = 0L
+    private var maxPointers = 0
+    private var moved = false
+    private var leftHeld = false
+    private var multiDownAt = 0L
+    private var multiMoved = false
+    private var scrollAcc = 0f
+
+    /** 菜单模式下的光标位置；<=0 表示还没初始化（首次触摸时置到屏幕中心） */
+    private var cursorX = -1f
+    private var cursorY = -1f
+
+    /** 已经发过多少条输入事件（首次若干条打日志，方便排查） */
+    private var sent = 0
+
+    /** 收到过多少次按下（只日志前几次：确认触摸真的进到 View 层） */
+    private var downs = 0
+
+    private val longPress = Runnable {
+        if (!moved && !leftHeld && maxPointers == 1) {
+            sendButton(0, true)
+            leftHeld = true
+            Log.i(TOUCH_TAG, "长按 → 左键按住")
+        }
+    }
+
+    private fun handleTouch(v: View, ev: MotionEvent): Boolean {
+        // 输入绝不能把 UI 线程带崩：任何异常都吞掉并记一条日志
+        try {
+            dispatchTouch(ev)
+        } catch (t: Throwable) {
+            Log.w(TOUCH_TAG, "触摸处理异常：$t")
+        }
+        return true
+    }
+
+    private fun dispatchTouch(ev: MotionEvent) {
+        val now = SystemClock.uptimeMillis()
+        if (cursorX < 0f) {
+            cursorX = if (surfaceW > 0) surfaceW / 2f else 720f
+            cursorY = if (surfaceH > 0) surfaceH / 2f else 1280f
+        }
+
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (downs++ < 3) {
+                    // 排查用：能打出来就说明触摸确实进了这个 View
+                    // （MuMu 那种「应用在独立虚拟 display」的环境里 adb 注入
+                    //   根本到不了应用层，只能靠这条日志判断）
+                    Log.i(TOUCH_TAG, "ACTION_DOWN @${ev.x},${ev.y} grabbed=${CallbackBridge.grabbed}")
+                }
+                downX = ev.x
+                downY = ev.y
+                lastX = ev.x
+                lastY = ev.y
+                downAt = now
+                maxPointers = 1
+                moved = false
+                leftHeld = false
+                multiMoved = false
+                scrollAcc = 0f
+                ui.postDelayed(longPress, LONG_PRESS_MS)
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                maxPointers = maxOf(maxPointers, ev.pointerCount)
+                // 多指落下就撤销「单指点按/长按」的判定
+                ui.removeCallbacks(longPress)
+                if (leftHeld) {
+                    sendButton(0, false)
+                    leftHeld = false
+                }
+                multiDownAt = now
+                multiMoved = false
+                lastY = avgY(ev)
+                scrollAcc = 0f
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (ev.pointerCount <= 1) {
+                    val dx = ev.x - lastX
+                    val dy = ev.y - lastY
+                    lastX = ev.x
+                    lastY = ev.y
+                    if (!moved && hypot(ev.x - downX, ev.y - downY) > TAP_SLOP) {
+                        moved = true
+                        ui.removeCallbacks(longPress)
+                    }
+                    if (moved) {
+                        moveCursor(dx, dy)
+                    }
+                } else if (ev.pointerCount >= 2) {
+                    val y = avgY(ev)
+                    val dy = y - lastY
+                    lastY = y
+                    if (abs(dy) > 2f) {
+                        multiMoved = true
+                        multiDownAt = now
+                    }
+                    scrollAcc += dy
+                    while (abs(scrollAcc) >= SCROLL_STEP) {
+                        // 手指往上滑 = 滚轮向下（MC 里 = 下一格）
+                        val dir = if (scrollAcc > 0f) -1.0 else 1.0
+                        sendScroll(dir)
+                        scrollAcc -= if (scrollAcc > 0f) SCROLL_STEP else -SCROLL_STEP
+                    }
+                }
+            }
+
+            MotionEvent.ACTION_POINTER_UP -> {
+                multiMoved = multiMoved || moved
+            }
+
+            MotionEvent.ACTION_UP -> {
+                ui.removeCallbacks(longPress)
+                val held = now - downAt
+                val multiTap = maxPointers >= 2 && !multiMoved && (now - multiDownAt) < TAP_MAX_MS
+                when {
+                    leftHeld -> {
+                        sendButton(0, false)
+                        leftHeld = false
+                        Log.i(TOUCH_TAG, "松开左键")
+                    }
+                    multiTap && maxPointers >= 3 -> {
+                        sendKey(256) // GLFW_KEY_ESCAPE
+                        Log.i(TOUCH_TAG, "三指轻点 → ESC")
+                    }
+                    multiTap -> {
+                        sendButton(1, true)
+                        sendButton(1, false)
+                        Log.i(TOUCH_TAG, "双指轻点 → 右键")
+                    }
+                    !moved && held < TAP_MAX_MS -> {
+                        sendButton(0, true)
+                        sendButton(0, false)
+                    }
+                }
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                ui.removeCallbacks(longPress)
+                if (leftHeld) {
+                    sendButton(0, false)
+                    leftHeld = false
+                }
+            }
+        }
+    }
+
+    private fun avgY(ev: MotionEvent): Float {
+        var s = 0f
+        for (i in 0 until ev.pointerCount) {
+            s += ev.getY(i)
+        }
+        return if (ev.pointerCount > 0) s / ev.pointerCount else lastY
+    }
+
+    /**
+     * 移动指针。
+     *
+     * 抓住鼠标（游戏内）时游戏每帧都会把光标摆回中心，所以这里每次都发
+     * 「中心 + 本次增量」；否则增量会被下一帧的归中吃掉一半以上。
+     */
+    private fun moveCursor(dx: Float, dy: Float) {
+        val w = if (surfaceW > 0) surfaceW.toFloat() else 1f
+        val h = if (surfaceH > 0) surfaceH.toFloat() else 1f
+        if (CallbackBridge.grabbed) {
+            val sx = dx * SENS_LOOK
+            val sy = dy * SENS_LOOK
+            CallbackBridge.nativeSendCursorPos(w / 2f + sx, h / 2f + sy)
+        } else {
+            cursorX = (cursorX + dx * SENS_CURSOR).coerceIn(1f, w - 1f)
+            cursorY = (cursorY + dy * SENS_CURSOR).coerceIn(1f, h - 1f)
+            CallbackBridge.nativeSendCursorPos(cursorX, cursorY)
+        }
+        if (sent++ < 3) {
+            Log.i(TOUCH_TAG, "光标 d=($dx,$dy) grabbed=${CallbackBridge.grabbed}")
+        }
+    }
+
+    private fun sendButton(button: Int, pressed: Boolean) {
+        CallbackBridge.nativeSendMouseButton(button, if (pressed) 1 else 0, 0)
+        if (sent++ < 3) {
+            Log.i(TOUCH_TAG, "鼠标键 $button ${if (pressed) "按下" else "抬起"}")
+        }
+    }
+
+    private fun sendScroll(y: Double) {
+        CallbackBridge.nativeSendScroll(0.0, y)
+        if (sent++ < 3) {
+            Log.i(TOUCH_TAG, "滚轮 $y")
+        }
+    }
+
+    private fun sendKey(glfwKey: Int) {
+        CallbackBridge.nativeSendKey(glfwKey, 0, 1, 0)
+        CallbackBridge.nativeSendKey(glfwKey, 0, 0, 0)
+        if (sent++ < 3) {
+            Log.i(TOUCH_TAG, "按键 $glfwKey")
+        }
+    }
+
+    /**
+     * 输入自检（联调用）：依次发鼠标/滚轮/按键，结果写进 logcat。
+     *
+     * 触发方式：`adb shell run-as com.caiwenjun.ccl touch CCL/input-test`，
+     * 走 `auto-probe`（`lib.rs` 在探针跑起来后会调这个方法）。
+     * 判据：内嵌 JVM 侧随后 `glfwGetCursorPos` 读到 (600,700) 就说明
+     * ART 写进去的值确实进了 `pojav_environ`，两个 VM 打通了。
+     */
+    @JvmStatic
+    fun inputSelfTest(): String {
+        val b = StringBuilder()
+        fun step(name: String, body: () -> Unit) {
+            try {
+                body()
+                b.append(name).append("=ok ")
+            } catch (t: Throwable) {
+                b.append(name).append("=!").append(t).append(' ')
+            }
+        }
+        step("cursor") { CallbackBridge.nativeSendCursorPos(600f, 700f) }
+        step("lbtn") {
+            CallbackBridge.nativeSendMouseButton(0, 1, 0)
+            CallbackBridge.nativeSendMouseButton(0, 0, 0)
+        }
+        step("rbtn") {
+            CallbackBridge.nativeSendMouseButton(1, 1, 0)
+            CallbackBridge.nativeSendMouseButton(1, 0, 0)
+        }
+        step("scroll") { CallbackBridge.nativeSendScroll(0.0, 1.0) }
+        step("key") {
+            CallbackBridge.nativeSendKey(256, 0, 1, 0)
+            CallbackBridge.nativeSendKey(256, 0, 0, 0)
+        }
+        val s = b.toString().trim()
+        Log.i(TOUCH_TAG, "自检：$s")
+        return s
+    }
 }

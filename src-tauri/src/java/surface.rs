@@ -186,6 +186,185 @@ pub fn prepare_game_surface(timeout_ms: i64) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// 输入就绪（M4-b-3）
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_os = "android"))]
+pub fn enable_input() -> String {
+    "输入开关只对 Android 有意义".into()
+}
+
+/// 保险：把 `libpojavexec` 的 `input_ready` 再确认一次，返回一句话结果。
+///
+/// **不是必需的**：`JNI_OnLoad` 的 JVM 分支自己会把它设成 1（logcat 里
+/// `input_bridge_v3.c: Input ready: 1`）。这里只是启动时再断言一次并留一条日志，
+/// 顺便覆盖「以后换了一版 so、行为变了」的情况。
+///
+/// ## 为什么绕过 JNI 方法查找
+///
+/// `Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady` 在 so 里**有导出**，
+/// 但它不在 `RegisterNatives` 那张表里。而我们的 so 是 Rust `dlopen` 进来的，
+/// ART 的 ClassLoader 并不知道它 —— 非注册的 native 方法要靠
+/// 「类加载器 → 已加载库」这条链查符号，链断了就报：
+///
+/// ```text
+/// UnsatisfiedLinkError: No implementation found for
+///   boolean org.lwjgl.glfw.CallbackBridge.nativeSetInputReady(boolean)
+/// ```
+///
+/// 所以这里直接 `dlsym` 拿函数指针调（反汇编看它只做
+/// `movb %cl, 0x271d0(%rax)` 一件小事）。
+#[cfg(target_os = "android")]
+pub fn enable_input() -> String {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::{c_char, c_int, c_void};
+
+    extern "C" {
+        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn dlerror() -> *mut c_char;
+    }
+    const RTLD_NOW: c_int = 0x0002;
+
+    /// `JNIEXPORT jboolean JNICALL JavaCritical_...(jboolean)`
+    ///
+    /// 「critical native」不做 JNI 参数搬运，直接是 `bool -> bool` 的 C ABI。
+    type SetReadyFn = unsafe extern "C" fn(u8) -> u8;
+
+    let Some(path) = imp::so_path() else {
+        return "ERR:还没桥接过 Surface（不知道 so 在哪）".into();
+    };
+    let c_path = match CString::new(path.clone()) {
+        Ok(c) => c,
+        Err(_) => return "ERR:so 路径含 NUL".into(),
+    };
+
+    unsafe {
+        let _ = dlerror();
+        // 同一路径的第二次 dlopen 只是引用计数 +1，拿到的是同一个句柄
+        let handle = dlopen(c_path.as_ptr(), RTLD_NOW);
+        if handle.is_null() {
+            let e = dlerror();
+            let msg = if e.is_null() {
+                "（无详情）".to_string()
+            } else {
+                CStr::from_ptr(e).to_string_lossy().to_string()
+            };
+            return format!("ERR:dlopen {path} 失败：{msg}");
+        }
+        let sym = dlsym(
+            handle,
+            CString::new("JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady")
+                .unwrap()
+                .as_ptr(),
+        );
+        if sym.is_null() {
+            return "ERR:so 里没有 nativeSetInputReady（这版 pojavexec 不支持？）".into();
+        }
+        let f: SetReadyFn = std::mem::transmute(sym);
+        let ret = f(1);
+        format!("OK|input_ready=1（nativeSetInputReady 返回 {ret}）")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 输入自检（M4-b-3 联调）
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_os = "android"))]
+pub fn debug_send_cursor(_x: f32, _y: f32) -> String {
+    "只对 Android 有意义".into()
+}
+
+/// **联调专用**：绕过 Java native，直接 `dlsym` 调 so 里的
+/// `critical_send_cursor_pos(float, float)`。
+///
+/// 用途是二分「ART 侧注册的 native 到底有没有跑到这段 C 代码」：
+/// - 直调有效、Java 调用无效 → 问题在 ART 的绑定/门禁，不在事件通路
+/// - 直调也无效 → 门禁在 `pojav_environ` 的某个字段上
+#[cfg(target_os = "android")]
+pub fn debug_send_cursor(x: f32, y: f32) -> String {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::{c_char, c_int, c_void};
+
+    extern "C" {
+        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn dlerror() -> *mut c_char;
+    }
+    const RTLD_NOW: c_int = 0x0002;
+
+    let Some(path) = imp::so_path() else {
+        return "ERR:还没有 so 路径".into();
+    };
+    let c_path = match CString::new(path) {
+        Ok(c) => c,
+        Err(_) => return "ERR:路径含 NUL".into(),
+    };
+    unsafe {
+        let handle = dlopen(c_path.as_ptr(), RTLD_NOW);
+        if handle.is_null() {
+            let e = dlerror();
+            return format!(
+                "ERR:dlopen 失败：{}",
+                if e.is_null() { "?".into() } else { CStr::from_ptr(e).to_string_lossy().to_string() }
+            );
+        }
+        let sym = dlsym(handle, CString::new("critical_send_cursor_pos").unwrap().as_ptr());
+        if sym.is_null() {
+            return "ERR:没有 critical_send_cursor_pos".into();
+        }
+        type Fn2 = unsafe extern "C" fn(f32, f32);
+        let f: Fn2 = std::mem::transmute(sym);
+        f(x, y);
+        format!("OK|直调 critical_send_cursor_pos({x},{y})")
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn input_self_test() -> String {
+    "输入自检只对 Android 有意义".into()
+}
+
+/// 让 ART 侧的 `GameSurface.inputSelfTest()` 发一串输入，返回它的一句话结果。
+///
+/// 为什么由 Rust 触发而不是 Kotlin 自己在启动时跑：自检必须在
+/// `libpojavexec` 被 ART 加载**之后**（否则是 `UnsatisfiedLinkError`），
+/// 而那个时机只有启动 / 探针流程知道。开关文件：`<data>/input-test`。
+#[cfg(target_os = "android")]
+pub fn input_self_test() -> String {
+    use jni::objects::{JObject, JString};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let r = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("包装 ART JavaVM 失败：{e}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|e| format!("attach ART 失败：{e}"))?;
+        let activity = unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) };
+        let cls = imp::load_app_class(&mut env, &activity, "com.caiwenjun.ccl.GameSurface")?;
+        let v = env
+            .call_static_method(&cls, "inputSelfTest", "()Ljava/lang/String;", &[])
+            .map_err(|e| format!("调 inputSelfTest 失败：{e}"))?;
+        let obj = v.l().map_err(|e| format!("返回值不是对象：{e}"))?;
+        let s: String = env
+            .get_string(&JString::from(obj))
+            .map_err(|e| format!("读返回字符串失败：{e}"))?
+            .to_string_lossy()
+            .to_string();
+        Ok(s)
+    }));
+
+    match r {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => format!("ERR:{e}"),
+        Err(_) => "ERR:inputSelfTest panic".into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JNI 导出：由 Java 的 NativeBridge.setupWindowNative 调进来
 // ---------------------------------------------------------------------------
 
@@ -238,6 +417,14 @@ mod imp {
 
     const RTLD_NOW: c_int = 0x0002;
     const RTLD_GLOBAL: c_int = 0x0100;
+
+    /// `bridge_window` 里 dlopen 过的 so 绝对路径（M4-b-3 的 `enable_input` 要用）
+    static SO_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    /// 取桥接时记下的 so 路径
+    pub(super) fn so_path() -> Option<String> {
+        SO_PATH.get().cloned()
+    }
 
     type JniOnLoadFn =
         unsafe extern "system" fn(*mut jni::sys::JavaVM, *mut c_void) -> jni::sys::jint;
@@ -400,6 +587,8 @@ mod imp {
         if handle.is_null() {
             return format!("ERR:dlopen {} 失败：{}", so, take_dlerror());
         }
+        // 记下来：`enable_input` 要重新 dlopen 拿句柄去 dlsym
+        let _ = SO_PATH.set(so.clone());
 
         let onload_sym = unsafe { dlsym(handle, CString::new("JNI_OnLoad").unwrap().as_ptr()) };
         let setup_sym = unsafe {

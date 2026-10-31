@@ -903,6 +903,163 @@ Abort message: 'Pointer tag for 0x729ea0ea90 was truncated,
 跑测试前必须做三件事：`svc power stayon true`、`input keyevent KEYCODE_WAKEUP` +
 `wm dismiss-keyguard`、并检查 `topResumedActivity` 确实是 `com.caiwenjun.ccl`。
 
+## M4-b-3 —— 输入桥：触摸真的能操纵游戏（2026-10-31）
+
+目标是「手指划屏幕能看到视角转」。做完发现真正的难点不是手势，而是
+**这两个 VM 之间谁持有那几个 native**。
+
+### 7.1 第一个结论：native 只在 ART 那侧注册
+
+最初的设计是「Kotlin 收触摸 → Rust → attach 到内嵌 JVM → 调 `CallbackBridge`」，
+理由是「native 是在内嵌 JVM 的 `JNI_OnLoad` 里注册的」。探针一跑就被打回：
+
+```text
+[probe] input.setcursor=写回生效 读回=123.0,456.0
+[probe] input.sendcursor=!java.lang.reflect.InvocationTargetException
+        <- java.lang.UnsatisfiedLinkError:
+           'void org.lwjgl.glfw.CallbackBridge.nativeSendCursorPos(float, float)'
+```
+
+`libpojavexec` 的 `JNI_OnLoad` 分两段：
+
+| 谁先加载 | 它做的事 |
+| --- | --- |
+| ART（`NativeBridge.setupWindow` 的 Java 帧里 dlopen） | `dalvikJavaVMPtr = vm`，**`FindClass` + `RegisterNatives` 注册 8 个输入 native**，缓存 3 个 Java 回调 |
+| 内嵌 JVM（`System.loadLibrary("pojavexec")`） | `runtimeJavaVMPtr = vm`，只缓存 GLFW 那几个方法，**不注册输入 native** |
+
+也就是说：输入 native 只在 **ART** 的 `CallbackBridge` 类上有绑定；JVM 那边
+只需要这个类**存在**（供 `GetStaticMethodID` 缓存回调）。这也解释了为什么
+`shim.jar` 一直够用 —— JVM 侧从来不调那些 native。
+
+**但 ART 侧原来没有这个类**（`FindClass` 返回 null → 注册整表跳过）。所以正确
+做法是把 `org/lwjgl/glfw/CallbackBridge.java` **编进 APK**（和 `shim.jar` 里那份
+逐字一致），然后 Kotlin 直接调，压根不需要绕 Rust：
+
+```text
+SurfaceView.onTouchEvent (ART)
+  → org.lwjgl.glfw.CallbackBridge.nativeSendCursorPos / nativeSendMouseButton / ...
+    → libpojavexec 的输入队列（pojav_environ，进程级共享）
+      → glfwPollEvents（内嵌 JVM 的渲染线程）→ MC 的回调
+```
+
+### 7.2 第二个结论：抓鼠标时必须发「中心 + 增量」
+
+`glfwSetCursorPos` 在 fork 版 GLFW 里是 native，语义只能实测。探针里
+「set 之后立刻 get」给出答案：**写回生效**（`set(123,456)` → `get=123.0,456.0`）。
+
+这条很关键，因为 MC 在抓到鼠标时**每帧结束都会把光标摆回屏幕中心**
+（`MouseHandler.turnPlayer()` 里的 `glfwSetCursorPos(w/2, h/2)`）。于是：
+
+| 场景 | 该发什么 | 发错的后果 |
+| --- | --- | --- |
+| 游戏内（`CallbackBridge.grabbed == true`） | `中心 + 本帧增量` | 发绝对坐标 → delta = 绝对坐标 − 中心，视角瞬间飞出天际 |
+| 菜单里（未抓取） | 绝对坐标 | 发中心+增量 → 光标永远回中心，点不到按钮 |
+
+`grabbed` 由 `CallbackBridge.onGrabStateChanged(boolean)` 维护 —— 这个回调是
+native 主动调进来的，正好落在这份 ART 侧的类上，所以 Kotlin 能直接读。
+
+一帧内收到多个 `ACTION_MOVE` 不会丢样：MC 的 `MouseHandler` 会把帧内所有
+delta **累加**，帧末才归中一次。
+
+### 7.3 手势表
+
+| 手势 | 行为 | 实现要点 |
+| --- | --- | --- |
+| 单指拖动 | 移动指针 / 游戏内转视角 | 位移超过 22px 才算拖动 |
+| 单指轻点 | 左键点击（按下+抬起） | 300ms 内且没超过阈值 |
+| 单指按住 | 左键按住（挖方块、连续攻击） | 380ms 触发，抬起时释放 |
+| 双指轻点 | 右键（放置 / 使用） | 双指都快速抬起且没滑动 |
+| 双指上下滑 | 滚轮（切物品栏） | 每 70px 一格 |
+| 三指轻点 | ESC（打开游戏菜单） | 目前唯一的「回得去」手段 |
+
+### 7.4 验证方法（不依赖 MC）
+
+MC 在 MuMu 上还卡在纹理上传崩溃（见 6.4），没法用它验证输入。所以用探针
+（内嵌 JVM 里跑的最小 GLFW 程序）当「游戏替身」：注册三个真正的 GLFW 回调 →
+`glfwPollEvents` 轮询 → 把收到的事件打出来。同时 Rust 等 9 秒后触发 **ART 侧**
+的 `GameSurface.inputSelfTest()`，两边靠 `pojav_environ` 这份进程级共享状态通信。
+
+```bash
+adb shell run-as com.caiwenjun.ccl touch CCL/input-test CCL/auto-probe
+adb logcat -s RustStdoutStderr | grep -E "ccl-input|probe input\."
+```
+
+实测输出（MuMu / x86_64 / Android 15）：
+
+```text
+[probe] input.setcursor=写回生效 读回=123.0,456.0
+[probe] input.callbacks=ok 已注册 cursor/button/scroll
+[ccl-input] 重开输入开关：OK|input_ready=1（nativeSetInputReady 返回 0）
+[ccl-input] OK|直调 critical_send_cursor_pos(321,123)
+[ccl-input] ART 自检：cursor=ok lbtn=ok rbtn=ok scroll=ok key=ok
+[probe] input.listen=收到 7 条: cursor 321.0 123.0 | cursor 600.0 700.0 |
+        button 0 1 | button 0 0 | button 1 1 | button 1 0 …(共 7)
+```
+
+`321,123` 是 Rust 直调 C 函数发的，`600,700` 是 **ART 侧 Kotlin 经
+`CallbackBridge` 发的** —— 两条路都进到同一个队列，JVM 侧全部收到。
+链路（Kotlin → native → 队列 → `glfwPollEvents` → 回调）至此完全打通。
+
+**但 View 那一层没能在 MuMu 上验证**：想在探针监听期间用
+`adb shell input swipe/tap` 模拟手指，结果一条事件都没有，`CCLInput` 也没有
+`ACTION_DOWN` 日志。原因是 MuMu 把应用放在独立虚拟 display 上，输入分发器
+那边 `mCurrentFocus=null`：
+
+```bash
+adb shell dumpsys window | grep mCurrentFocus     # → null
+adb shell input -d 11 tap 540 1300                # 指定 display 也没用
+```
+
+所以「手指 → `SurfaceView.onTouchEvent` → 手势判定」这一段只能在真机上确认，
+判据就是 `CCLInput: ACTION_DOWN @x,y grabbed=?` 这条日志。
+
+### 7.5 最大的坑：回调指针是 NULL，事件全被静默丢掉
+
+这一段卡了几个小时，值得单独记：**五个 step 全部 `ok`，游戏/探针却一条事件都收不到**。
+
+第一次用 `java.lang.reflect.Proxy` 假装实现 `GLFWCursorPosCallbackI` 来收事件。
+`glfwSetCursorPosCallback` 传给 native 的是 `callback.address()`，而代理对象
+没有原生跳板、`address()` 返回 0，于是 `nglfwSetCursorPosCallback` 存进去的是 NULL：
+
+```asm
+movq %rcx, 0x271f8(%rax)        ; pojav_environ->cursor_pos_callback = ptr(0!)
+```
+
+而 `critical_send_cursor_pos` 的第一行就是「没回调就返回」：
+
+```asm
+cmpq $0x0, 0x271f8(%rax)
+je   返回
+```
+
+`pojav_environ` 结构（反汇编读出来的布局，单位是字节偏移）：
+
+| 偏移 | 含义 |
+| --- | --- |
+| `+0x20` | 输入事件环形队列（8000 条 × 20 字节） |
+| `+0x27130` | 队列写入下标 |
+| `+0x271f0` | 用户注册的 **cursor-enter** 回调 |
+| `+0x271f8` | 用户注册的 **cursor-pos** 回调 |
+| `+0x271d0` | `input_ready` |
+| `+0x271d1` | 光标是否在窗口内 |
+| `+0x271d2` | 是否走 GLFW 回调直通 |
+
+改用**真正的** `GLFWCursorPosCallback` / `GLFWMouseButtonCallback` /
+`GLFWScrollCallback` 子类之后，事件立刻全到。教训：
+**用假对象测 native 回调，测的是假对象，不是通路。**
+
+顺带澄清一个误判：`input_ready` 并不是问题所在 —— `JNI_OnLoad` 的 JVM 分支
+自己会打印 `input_bridge_v3.c: Input ready: 1`。`nativeSetInputReady` 确实存在，
+但不在 `RegisterNatives` 表里，从 Kotlin 调必然是 `UnsatisfiedLinkError`
+（so 是 `dlopen` 进来的，没和 ClassLoader 关联），只能 `dlsym` 直调。
+
+### 7.6 还没做的
+
+- 虚拟按键（跳跃/潜行/打开背包）——现在只能靠手势摸到「移动 + 左右键 + 滚轮」
+- 键盘输入（聊天、命令）：`nativeSendChar` 已在类里声明，缺一个输入法桥
+- 状态栏/导航栏还在，全屏沉浸没做
+- 退出：目前只能重启 App；ESC 只能退出「游戏内」这一层
+
 ## 调试开关
 
 | 开关                    | 位置                                              | 用途                               |
@@ -913,6 +1070,7 @@ Abort message: 'Pointer tag for 0x729ea0ea90 was truncated,
 | `<data>/auto-plan`    | 同上                                              | 启动 3 秒后算一次 M4-b 启动计划并打 logcat（M4-b-1） |
 | `<data>/auto-embed`   | 同上                                              | 启动 3 秒后**只**建内嵌 VM 并跑 `CCL/tc` 下的测试类 `T`，不加载 pojavexec（6.7.2 的二分手段） |
 | `<data>/with-pojavexec` | 同上（配合 `auto-embed`）                            | 额外先 `dlopen libpojavexec` + 桥接 Surface，再建 VM |
+| `<data>/input-test`   | 同上（配合 `auto-probe`）                             | 启动 9 秒后让 **ART 侧**发一串输入（`GameSurface.inputSelfTest`），验证两个 VM 共享输入状态（M4-b-3） |
 | Intent `ccl_overlay`  | 启动参数                                            | `--ez ccl_overlay true` 让 SurfaceView 盖住 WebView（M4-a） |
 
 三个 `auto-*` 开关**互斥**（`else if` 链）：内嵌 JVM 一个进程只能建一次，
