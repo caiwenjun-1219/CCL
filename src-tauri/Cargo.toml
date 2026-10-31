@@ -45,6 +45,12 @@ percent-encoding = "2"
 lzma-rs = "0.3"
 tar = "0.4"
 
+# 内嵌 JVM（Android）：只取 JavaVM/JNIEnv 的类型封装。
+# 不开 invocation feature —— 那会在链接期要求 libjvm 存在，
+# 而我们是运行时 dlopen 拿 JNI_CreateJavaVM 函数指针。
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 [profile.release]
 codegen-units = 16
 lto = false

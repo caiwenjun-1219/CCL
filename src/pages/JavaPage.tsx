@@ -1,7 +1,26 @@
 import { useEffect, useState } from "react";
-import { Coffee, Download, RefreshCw, Loader2, Check, Cpu, Smartphone, ShieldCheck, AlertTriangle } from "lucide-react";
+import {
+  Coffee,
+  Download,
+  RefreshCw,
+  Loader2,
+  Check,
+  Cpu,
+  Smartphone,
+  ShieldCheck,
+  AlertTriangle,
+  Stethoscope,
+  X,
+  FlaskConical,
+} from "lucide-react";
 import { useApp } from "../store/app";
-import { api, type JavaInfo, type JavaEnv } from "../lib/tauri";
+import {
+  api,
+  type JavaInfo,
+  type JavaEnv,
+  type SmokeReport,
+  type EmbeddedReport,
+} from "../lib/tauri";
 import { isMobile } from "../lib/env";
 
 /** 桌面端（Adoptium）可下载的 Java 主版本 */
@@ -24,6 +43,12 @@ export default function JavaPage() {
   const [downloading, setDownloading] = useState<number | null>(null);
   const [permGranted, setPermGranted] = useState(true);
   const [permBusy, setPermBusy] = useState(false);
+  const [smoke, setSmoke] = useState<SmokeReport | null>(null);
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const [smokeErr, setSmokeErr] = useState<string | null>(null);
+  const [emb, setEmb] = useState<EmbeddedReport | null>(null);
+  const [embBusy, setEmbBusy] = useState(false);
+  const [embErr, setEmbErr] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -72,6 +97,32 @@ export default function JavaPage() {
     }
   };
 
+  const runSmoke = async () => {
+    setSmokeBusy(true);
+    setSmokeErr(null);
+    try {
+      setSmoke(await api.javaSmokeTest());
+    } catch (e) {
+      setSmoke(null);
+      setSmokeErr(String(e));
+    } finally {
+      setSmokeBusy(false);
+    }
+  };
+
+  const runEmbedded = async () => {
+    setEmbBusy(true);
+    setEmbErr(null);
+    try {
+      setEmb(await api.javaEmbeddedTest());
+    } catch (e) {
+      setEmb(null);
+      setEmbErr(String(e));
+    } finally {
+      setEmbBusy(false);
+    }
+  };
+
   const isAndroid = env?.is_android_jre ?? false;
   const versions = env?.supported_majors?.length
     ? env.supported_majors
@@ -112,6 +163,142 @@ export default function JavaPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      <div className="card mb-5">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Stethoscope size={15} className="text-ccl-muted" />
+            <h2 className="text-[13px] font-bold">运行自检</h2>
+          </div>
+          <button className="btn !py-1 !px-3 !text-[12px]" disabled={smokeBusy} onClick={runSmoke}>
+            {smokeBusy ? <Loader2 size={12} className="animate-spin" /> : <Stethoscope size={12} />}
+            {smoke ? "重新检测" : "开始检测"}
+          </button>
+        </div>
+        <p className="text-[12px] text-ccl-muted leading-relaxed mb-3">
+          实际执行一次 <code>java -version</code>，并尝试直接加载 <code>libjvm.so</code>。
+          安卓上这两条路能走通哪条，决定了启动游戏该用子进程还是内嵌 JVM。
+        </p>
+
+        {smokeErr && (
+          <div className="flex items-start gap-2 text-[12px] text-ccl-danger">
+            <X size={13} className="mt-0.5 shrink-0" /> {smokeErr}
+          </div>
+        )}
+
+        {smoke && (
+          <div className="space-y-2">
+            <div
+              className={`text-[12px] leading-relaxed rounded-md px-3 py-2 border ${
+                smoke.exec_ok
+                  ? "border-ccl-accent2/40 bg-ccl-accent2/5 text-ccl-accent2"
+                  : "border-ccl-warn/40 bg-ccl-warn/5 text-ccl-warn"
+              }`}
+            >
+              {smoke.verdict}
+            </div>
+            <div className="text-[11.5px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 space-y-1">
+              <Line label="设备 ABI" value={smoke.device_arch} />
+              <Line label="JRE 目录" value={smoke.java_dir} mono />
+              <Line
+                label="bin/java"
+                value={`${smoke.bin_exists ? "存在" : "缺失"} · 可执行位 ${smoke.bin_exec_bit ? "有" : "无"}`}
+              />
+              <Line
+                label="exec 结果"
+                value={
+                  smoke.exec_ok
+                    ? `成功，退出码 ${smoke.exec_code}`
+                    : `失败 · errno ${smoke.exec_errno ?? "?"} · ${smoke.exec_error ?? ""}`
+                }
+              />
+              <Line
+                label="libjvm.so"
+                value={
+                  smoke.libjvm_exists
+                    ? smoke.dlopen_ok
+                      ? "dlopen 成功"
+                      : `dlopen 失败：${smoke.dlopen_error}`
+                    : "不存在"
+                }
+                mono
+              />
+            </div>
+            {smoke.exec_output && (
+              <pre className="text-[11px] leading-relaxed bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap text-ccl-muted">
+                {smoke.exec_output.trim()}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+
+      {isAndroid && (
+        <div className="card mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <FlaskConical size={15} className="text-ccl-muted" />
+              <h2 className="text-[13px] font-bold">内嵌 JVM 实验</h2>
+            </div>
+            <button className="btn !py-1 !px-3 !text-[12px]" disabled={embBusy} onClick={runEmbedded}>
+              {embBusy ? <Loader2 size={12} className="animate-spin" /> : <FlaskConical size={12} />}
+              {emb ? "再测一次" : "开始实验"}
+            </button>
+          </div>
+          <p className="text-[12px] text-ccl-muted leading-relaxed mb-3">
+            把 <code>libjvm.so</code> 直接映射进 App 进程并调 <code>JNI_CreateJavaVM</code>，然后从 VM
+            里读出 <code>java.version</code>。安卓要出画面只能走这条路——独立进程拿不到
+            SurfaceView 的窗口句柄，图形层无从建立。
+          </p>
+
+          {embErr && (
+            <div className="flex items-start gap-2 text-[12px] text-ccl-danger">
+              <X size={13} className="mt-0.5 shrink-0" /> {embErr}
+            </div>
+          )}
+
+          {emb && (
+            <div className="space-y-2">
+              <div
+                className={`text-[12px] leading-relaxed rounded-md px-3 py-2 border ${
+                  emb.vm_ok
+                    ? "border-ccl-accent2/40 bg-ccl-accent2/5 text-ccl-accent2"
+                    : "border-ccl-warn/40 bg-ccl-warn/5 text-ccl-warn"
+                }`}
+              >
+                {emb.verdict}
+              </div>
+              <div className="text-[11.5px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 space-y-1">
+                <Line label="JRE 目录" value={emb.java_dir} mono />
+                <Line
+                  label="libjvm.so"
+                  value={
+                    emb.libjvm_exists
+                      ? emb.dlopen_ok
+                        ? "dlopen 成功"
+                        : `dlopen 失败：${emb.dlopen_error}`
+                      : "不存在"
+                  }
+                  mono
+                />
+                <Line
+                  label="CreateJavaVM"
+                  value={`${emb.create_rc_name}（${emb.create_rc}）· ${emb.elapsed_ms} ms`}
+                />
+                {emb.vm_ok && (
+                  <>
+                    <Line label="java.version" value={emb.java_version} mono />
+                    <Line label="java.vm" value={`${emb.java_vm_name} ${emb.java_vm_version}`} />
+                    <Line label="os.arch" value={emb.os_arch} />
+                    <Line label="java.home" value={emb.java_home} mono />
+                  </>
+                )}
+                {emb.cached && <Line label="说明" value="VM 每进程只能建一次，这是上次的结果" />}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -206,6 +393,16 @@ export default function JavaPage() {
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** 自检结果的一行 key-value */
+function Line({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex gap-2">
+      <span className="text-ccl-muted shrink-0 w-[74px]">{label}</span>
+      <span className={`flex-1 min-w-0 break-all ${mono ? "font-mono text-[11px]" : ""}`}>{value}</span>
     </div>
   );
 }

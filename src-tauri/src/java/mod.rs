@@ -12,6 +12,11 @@
 //! `cfg` 分流 + `pub use` 再导出而丢失。
 
 mod common;
+/// JVM 冒烟自检（跨平台，桌面端用于确认 java 可执行，Android 端用于判定走 exec 还是 dlopen）
+pub mod smoke;
+/// 内嵌 JVM 实验（仅 Android 有意义）：验证能否在 App 进程内 JNI_CreateJavaVM。
+/// 这是"安卓能不能真的出画面"的前置条件 —— 子进程拿不到 Surface，必须同进程。
+pub mod embedded;
 
 #[cfg(not(target_os = "android"))]
 pub mod desktop;
@@ -82,4 +87,23 @@ pub fn resolve_java(app: AppHandle, mc_version: String) -> Result<JavaInfo, Stri
 /// 平台差异只体现在「怎么扫描到已装的 Java」上，选版规则统一在 `common::select_java`。
 pub fn auto_select_java_with(app: &AppHandle, need: u32, label: &str) -> Result<JavaInfo, String> {
     select_java(&platform::scan_javas(app.clone()), need, label)
+}
+
+/// JVM 冒烟自检：只读地验证「这台设备能不能把 Java 跑起来」。
+///
+/// 桌面端返回 `exec_ok=true` 基本必然；Android 端的关键结论在
+/// `exec_ok` / `dlopen_ok` 两个字段 —— 前者决定能不能沿用子进程启动，
+/// 后者决定能不能改走内嵌 JVM。详见 [`smoke`] 模块注释。
+#[tauri::command]
+pub async fn java_smoke_test(app: AppHandle) -> Result<smoke::SmokeReport, String> {
+    smoke::run(app).await
+}
+
+/// 内嵌 JVM 实验：在 App 进程内 dlopen libjvm.so 并 JNI_CreateJavaVM。
+///
+/// 只验证 VM 能否建立，不加载任何游戏代码。结果按进程缓存
+/// （`JNI_CreateJavaVM` 一个进程只能成功一次）。
+#[tauri::command]
+pub async fn java_embedded_test(app: AppHandle) -> Result<embedded::EmbeddedReport, String> {
+    embedded::run(app).await
 }

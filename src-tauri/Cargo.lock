@@ -446,6 +446,7 @@ dependencies = [
  "dirs 5.0.1",
  "flate2",
  "futures-util",
+ "jni",
  "lzma-rs",
  "md-5",
  "percent-encoding",

@@ -153,7 +153,10 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson
             paths.push(path.to_string_lossy().to_string());
         }
     }
-    paths.join(";")
+    // classpath 分隔符必须跟平台一致：Windows 是 ';'，Linux / Android / macOS 是 ':'。
+    // 之前写死 ';' 在桌面上没问题，但 Android 上 java 会把整串当成一个文件名，
+    // 表现为 `Could not find or load main class net.minecraft.client.main.Main`。
+    paths.join(if cfg!(windows) { ";" } else { ":" })
 }
 
 fn maven_path_from_name(name: &str) -> PathBuf {
@@ -544,6 +547,20 @@ pub async fn launch_instance(
         .current_dir(&game_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Android：JRE 的 `bin/java` 动态依赖 `lib/libjli.so`，而 Android 的 linker
+    // 不按 rpath 搜索，必须显式给 LD_LIBRARY_PATH，否则 exec 成功但立刻退出，
+    // 报 `CANNOT LINK EXECUTABLE ... library "libjli.so" not found`。
+    #[cfg(target_os = "android")]
+    {
+        let java_path = std::path::Path::new(&java_info.path);
+        if let Some(root) = java_path.parent().and_then(|p| p.parent()) {
+            let lib = root.join("lib");
+            let server = lib.join("server");
+            let ld = format!("{}:{}", lib.display(), server.display());
+            cmd.env("LD_LIBRARY_PATH", ld);
+        }
+    }
 
     #[cfg(windows)]
     {

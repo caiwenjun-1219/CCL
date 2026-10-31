@@ -43,6 +43,8 @@ pub fn run() {
             java::download_java,
             java::resolve_java,
             java::java_env,
+            java::java_smoke_test,
+            java::java_embedded_test,
             // Minecraft 版本
             minecraft::mc_version_manifest,
             minecraft::mc_local_versions,

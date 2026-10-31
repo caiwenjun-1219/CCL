@@ -101,6 +101,12 @@ class StoragePermissionPlugin(private val activity: Activity) : Plugin(activity)
             return
         }
         try {
+            // 先判存在：FileNotFoundException.getMessage() 就是 asset 路径本身，
+            // 上层没法据此判断「没有内置包」还是「磁盘坏了」，这里给个明确前缀
+            if (!assetExists(args.src)) {
+                invoke.reject("ASSET_MISSING:${args.src}")
+                return
+            }
             val destFile = java.io.File(args.dest)
             destFile.parentFile?.mkdirs()
             var total = 0L

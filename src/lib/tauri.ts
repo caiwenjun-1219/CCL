@@ -127,6 +127,49 @@ export interface JavaEnv {
   bundled_major: number | null;
 }
 
+/** JVM 冒烟自检结果：验证这台设备能不能把 Java 跑起来 */
+export interface SmokeReport {
+  device_arch: string;
+  java_dir: string;
+  java_bin: string;
+  bin_exists: boolean;
+  bin_exec_bit: boolean;
+  exec_ok: boolean;
+  exec_code: number | null;
+  exec_errno: number | null;
+  exec_error: string | null;
+  exec_output: string;
+  libjvm_path: string;
+  libjvm_exists: boolean;
+  dlopen_ok: boolean;
+  dlopen_error: string;
+  verdict: string;
+}
+
+/**
+ * 内嵌 JVM 实验（M1）结果：在 App 进程内 dlopen libjvm.so 并 JNI_CreateJavaVM。
+ * `vm_ok` 为 true 才说明「同进程跑 JVM」这条路可行。
+ */
+export interface EmbeddedReport {
+  java_dir: string;
+  libjvm_path: string;
+  libjvm_exists: boolean;
+  dlopen_ok: boolean;
+  dlopen_error: string;
+  symbol_ok: boolean;
+  create_rc: number;
+  create_rc_name: string;
+  vm_ok: boolean;
+  java_version: string;
+  java_vm_name: string;
+  java_vm_version: string;
+  os_arch: string;
+  java_home: string;
+  elapsed_ms: number;
+  cached: boolean;
+  verdict: string;
+}
+
 export interface Account {
   uuid: string;
   name: string;
@@ -134,9 +177,7 @@ export interface Account {
   refresh_token: string;
   account_type: string;
   expires_at: number;
-}
-
-/**
+}/**
  * Rust 端 `LoginPoll` 枚举的 JSON 形状。
  * 注意：Pending 是单元变体，serde 会序列化成**字符串** "Pending"（不是对象），
  * 所以判断时必须先确认是对象，不能直接用 `"Done" in res`（对字符串用 in 会抛 TypeError）。
@@ -264,7 +305,10 @@ export const api = {
   resolveJava: (mcVersion: string) =>
     invoke<JavaInfo>("resolve_java", { mcVersion }),
   javaEnv: () => invoke<JavaEnv>("java_env"),
-
+  /** JVM 冒烟自检：确认这台设备能不能把 Java 跑起来 */
+  javaSmokeTest: () => invoke<SmokeReport>("java_smoke_test"),
+  /** 内嵌 JVM 实验：在 App 进程内建 VM（安卓出画面的前置条件） */
+  javaEmbeddedTest: () => invoke<EmbeddedReport>("java_embedded_test"),
   // Android 存储权限（MANAGE_EXTERNAL_STORAGE）：检测与申请
   checkStoragePermission: () =>
     invoke<{ granted: boolean }>("plugin:ccl-android|check_storage_permission"),

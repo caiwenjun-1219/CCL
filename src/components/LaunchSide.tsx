@@ -175,12 +175,12 @@ export default function LaunchSide() {
               <span className="flex items-center gap-2">
                 <Loader2 size={16} className="animate-spin" /> 正在启动
               </span>
-            ) : isMobile() ? (
-              "移动端无法启动"
             ) : (
               "启动游戏"
             )}
-            <span className="sub">{current ? (isMobile() ? "请使用桌面版 CCL" : versionLabel || "—") : "未选择版本"}</span>
+            <span className="sub">
+              {current ? (isMobile() ? "安卓启动功能开发中" : versionLabel || "—") : "未选择版本"}
+            </span>
           </button>
         )}
 

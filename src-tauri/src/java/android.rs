@@ -526,6 +526,13 @@ async fn install_bundled(app: &AppHandle, major: u32) -> Result<Option<JavaInfo>
     }
 
     let (uni, bin) = bundled_asset_names(major, arch);
+    // 先确定到底有没有内置包：没有就直接交回在线下载，别再往下走
+    // （曾经只在拷贝报错时判断「缺失」，而 FileNotFoundException 的 message 就是
+    //   asset 路径本身，判不出来 → 直接抛错给用户，见 Java 25 那次报错）
+    if !(ccl_android::has_asset(app, &uni) && ccl_android::has_asset(app, &bin)) {
+        println!("[ccl-java] Java {major} 无内置包（{uni} / {bin}），走在线下载");
+        return Ok(None);
+    }
     let tmp = settings::java_dir(app).join(".tmp");
     std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
@@ -583,10 +590,13 @@ async fn install_bundled(app: &AppHandle, major: u32) -> Result<Option<JavaInfo>
 /// 插件侧错误信息是否表示「assets 里没有这个文件」
 fn asset_missing(err: &str) -> bool {
     let e = err.to_lowercase();
-    e.contains("filenotfound")
+    e.contains("asset_missing")
+        || e.contains("filenotfound")
         || e.contains("not found")
         || e.contains("no such file")
         || e.contains("无法找到")
+        // FileNotFoundException.getMessage() 只有路径，没有别的字眼
+        || (e.contains(".tar.xz") && !e.contains("字节"))
 }
 
 

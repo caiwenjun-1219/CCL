@@ -283,9 +283,18 @@ export default function FirstLaunchSetup({ onDone }: { onDone: () => void }) {
                     onClick={() => setJavaMajor(m)}
                   >
                     Java {m}
+                    {bundledMajor === m && (
+                      <span className="ml-1 text-[11px] opacity-80">· 内置</span>
+                    )}
                   </button>
                 ))}
               </div>
+              {bundledMajor !== null && bundledMajor !== javaMajor && (
+                <p className="text-[12px] text-ccl-warn leading-relaxed mb-4">
+                  安装包只内置了 Java {bundledMajor}，选 Java {javaMajor} 需要联网下载约
+                  30 MB，弱网下可能比较慢。
+                </p>
+              )}
 
               {javaBusy && (
                 <div className="mb-4">
