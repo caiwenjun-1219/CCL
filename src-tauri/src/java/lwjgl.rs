@@ -111,7 +111,7 @@ const SHIM_ASSET: &str = "lwjgl/shim.jar";
 /// 只按「文件在不在」判断复用会在换资源后踩坑：新打的 jar 没被释放，
 /// 设备上跑的还是上一版（我们就是这样被上一版 shim 坑过一次）。
 /// 改动 assets 里的任何文件时**把这个数字加一**，标记对不上就整体重解。
-const BUNDLE_REV: u32 = 4;
+const BUNDLE_REV: u32 = 6;
 
 #[cfg(target_os = "android")]
 pub fn ensure(app: &AppHandle) -> Result<LwjglFiles, String> {
@@ -312,6 +312,13 @@ pub async fn run(app: AppHandle) -> Result<LwjglReport, String> {
         };
         drop(env);
 
+        // M4-a 演示到此为止：把画面收回 WebView 下面，UI 重新可点。
+        // 必须在渲染完全结束之后 —— 改 z-order 会重建 Surface，
+        // 原来的 ANativeWindow 立刻失效。
+        if r.surface_ok {
+            crate::java::surface::set_overlay(false);
+        }
+
         r.steps_ok = text
             .lines()
             .filter(|l| l.contains('=') && !l.contains("=!"))
@@ -382,27 +389,30 @@ fn summarize(text: &str) -> String {
     let glfw_cls = get("glfw.class").map(|v| !v.starts_with('!')).unwrap_or(false);
 
     let init = get("glfw.init");
-    let frame = get("gl.frame");
+    let demo = get("gl.demo");
     let caps = get("gl.caps");
     let gl_ver = get("gl.version").unwrap_or("?");
     let renderer = get("gl.renderer").unwrap_or("?");
 
-    // 「画完一帧」必须真的没有 GL 错误。上下文没 current 时 glClear 之类
+    // 「画出画面」必须真的没有 GL 错误。上下文没 current 时 glClear 之类
     // 是静默无操作的，只看「没抛异常」会得到假阳性。
-    let frame_ok = frame.map(|v| v.contains("已清屏")).unwrap_or(false);
+    let demo_ok = demo
+        .map(|v| v.starts_with("ok ") && !v.contains("GL错误"))
+        .unwrap_or(false);
     let caps_ok = caps.map(|v| v.starts_with("ok ")).unwrap_or(false);
 
-    if init == Some("true") && frame_ok && caps_ok {
+    if init == Some("true") && demo_ok && caps_ok {
         return format!(
-            "渲染链路已打通：glfwInit → 建窗口 → GL 上下文 → 清屏 + 交换缓冲全部成功。\n\
-             {}\nGL_VERSION={gl_ver}\nGL_RENDERER={renderer}",
-            caps.unwrap_or("")
+            "画面已可见：glfwInit → 建窗口 → GL 上下文 → shader 三角形连续出帧，无 GL 错误。\n\
+             {}\nGL_VERSION={gl_ver}\nGL_RENDERER={renderer}\n{}",
+            caps.unwrap_or(""),
+            demo.unwrap_or("")
         );
     }
     if init == Some("true") {
         return format!(
             "glfwInit 成功（说明 Surface 桥接生效），但后续出帧没走通：{}\nGL_VERSION={gl_ver}",
-            frame.unwrap_or("未测")
+            demo.or_else(|| get("gl.frame")).unwrap_or("未测")
         );
     }
     if let Some(v) = get("render").filter(|v| v.starts_with("skipped")) {

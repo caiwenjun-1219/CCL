@@ -448,8 +448,89 @@ std::env::set_var("POJAVEXEC_EGL", dir.join("libltw.so"));   // 绝对路径
 
 第一条是 `Library.checkHash` 在比对 `META-INF/<platform>/<lib>.sha1`：
 `lwjgl-classes.jar` 里带的是 linux/x64 那份 natives 的哈希，跟我们 Android 的 so
-当然对不上，纯提示。第二条是 LWJGL 在探测「默认 GL 库名」时的正常失败，
+当然对不上，纯提示。第二条是 LWJGL 在探测「默认 GL 库名」的正常失败，
 真正要用的 `libltw.so` 随后就加载成功了（见 `gl.fp` 里的三个非零地址）。
+
+## M4-a —— 让画面真的能看见（2026-10-31 完成）
+
+M3 只是「EGL 链路通、能交换缓冲」，画面画在一个压在 WebView **下面**的
+SurfaceView 上，肉眼什么都看不到。M4-a 把它翻到上面，并连续出帧。
+
+### 4.1 做法
+
+`GameSurface.attach(activity, overlay)` 多一个参数，`overlay = true` 时
+**在创建阶段**就 `setZOrderOnTop(true)`，surface 直接盖住 WebView；
+同时 `holder.setFormat(OPAQUE)`（默认 RGB_565 会带 dither 噪点）。
+
+置顶与否必须一次性定死：`setZOrderOnTop` 改的是 surface 图层，
+运行期改在部分 ROM 上会重建 `Surface`，而我们已经交给 `libpojavexec` 的
+`ANativeWindow` 绑的是旧那块 —— EGL 不报错，画面就是不更新。
+
+开关走 Intent，不污染正常启动：
+
+```bash
+adb shell am start -n com.caiwenjun.ccl/.MainActivity --ez ccl_overlay true
+```
+
+演示跑完由 Rust 侧调 `GameSurface.setOverlay(false)` 把 UI 还给用户
+（`java/surface.rs::set_overlay`，Java 侧先比对状态，没变就什么都不做）。
+
+探针的 `gl.frame` 换成 `gl.demo`：**连续渲染 8 秒**（只画一帧的话缓冲区很快被回收，
+截图根本抓不到），画一个脉动的彩色三角形。顶点位置全用 `gl_VertexID` 算，
+不需要 VBO / attribute —— M4-a 只验证 shader 能不能编译链接，VBO 留给 M4-b。
+shader 编译失败会自动退回 `glScissor` 色带（只用 GL1.1，几乎不可能失败）。
+
+### 4.2 实测结果
+
+```
+[ccl-surface] OK|1440x2560
+[probe] glfw.init=true
+[probe] glfw.window=ok handle=0x7a0b5634f9d0
+[probe] gl.caps=ok OpenGL32=true OpenGL33=true
+[probe] gl.version=3.0 Large Thin Wrapper    gl.glsl=4.60 LTW
+[probe] gl.demo=ok 帧数=127 尺寸=1440x2560 模式=shader 三角形
+        像素[中(52,64,65) 上(61,66,45) 角(10,15,25)]
+[ccl-surface] setOverlay(false) ok
+```
+
+`像素` 那段是从 GPU `glReadPixels` 读回来的三个采样点（必须赶在
+`glfwSwapBuffers` **之前**，交换后 back buffer 内容未定义）：
+
+- 角 `(10,15,25)` = `glClearColor(0.04,0.06,0.10)` × 255，背景色精确命中
+- 中 `(52,64,65)`、上 `(61,66,45)` 与背景不同 → 三角形确实画上去了
+
+127 帧 / 8 秒 ≈ 16 fps，这是探针里 `Thread.sleep(16)` + 每帧反射调用的开销，
+不是渲染管线的上限。
+
+### 4.3 踩坑：MuMu 的虚拟 display 截不到实时画面
+
+`adb shell screencap` 在 MuMu 上抓出来的永远是**安卓桌面**，不是应用画面。
+查下来 MuMu 15 把每个应用放在独立的虚拟 display 上，而且**每次启动换一个新编号**：
+
+```
+Display #33  mumuscreen032  uniqueId=local:4619827441641914912   ← 有 CCL 界面
+Display #34  mumuscreen033  uniqueId=local:4619827527759502369   ← 全黑
+Display #35  mumuscreen034  uniqueId=local:4619826836014301986   ← 全黑
+Display #0   内置屏幕        uniqueId=local:4619827820427265280   ← 安卓桌面
+```
+
+`dumpsys SurfaceFlinger --display-id` 只列 HWC 的物理屏，**看不到这些虚拟屏**，
+得从 `dumpsys display` 里按 `mDisplayId` 找 `mBaseDisplayInfo` 的
+`uniqueId "local:<id>"`，再 `screencap -d <id>`。
+
+即便这样也只成功过一次：能读到的是**冻结帧**（换 display 拿到的还是上一轮画面），
+当前正在跑的那个 display 反而全黑（1440×2560 纯黑 PNG 恒为 20117 字节，可以拿这个
+数字判断「是不是没抓到东西」）。据判断是 MuMu 的虚拟屏不经过标准 framebuffer。
+
+**结论**：这类环境别指望 screencap 验证画面，用 `glReadPixels` 从 GPU 读回像素
+才可靠。要看真实画面，直接看 MuMu 窗口或上真机。
+
+顺带两个 Windows 侧的小坑：
+
+- Git Bash 会把 `adb shell` 的路径参数当本地路径转换（`/data/local/tmp/x.png`
+  → `C:/Program Files/Git/data/...`），命令整段加引号、并 `export MSYS_NO_PATHCONV=1`
+- `adb pull` 的目标目录同样会被转换；用 `F:/...` 这种 Windows 绝对路径最稳
+
 
 
 ## 调试开关
@@ -458,6 +539,7 @@ std::env::set_var("POJAVEXEC_EGL", dir.join("libltw.so"));   // 绝对路径
 | --------------------- | ----------------------------------------------- | -------------------------------- |
 | `<data>/jvm-opts.txt` | `<data>` = `/data/user/0/com.caiwenjun.ccl/CCL` | 一行一个 JVM 选项追加到默认值后（模拟器加 `-Xint`） |
 | `<data>/auto-probe`   | 同上（空文件即可）                                       | 启动 6 秒后自动跑一遍 JVM/LWJGL/首帧探针并打 logcat |
+| Intent `ccl_overlay`  | 启动参数                                            | `--ez ccl_overlay true` 让 SurfaceView 盖住 WebView（M4-a） |
 
 用 adb 操作：
 
@@ -465,6 +547,9 @@ std::env::set_var("POJAVEXEC_EGL", dir.join("libltw.so"));   // 绝对路径
 adb shell run-as com.caiwenjun.ccl touch CCL/auto-probe
 adb shell run-as com.caiwenjun.ccl cp /sdcard/jvm-opts.txt CCL/java/jvm-opts.txt
 adb logcat -s RustStdoutStderr | grep '\[probe\]'
+
+# 置顶演示：约 7 秒后出画面，画 8 秒后自动收回
+adb shell am start -n com.caiwenjun.ccl/.MainActivity --ez ccl_overlay true
 ```
 
 ## 构建（Windows 下绕开符号链接限制）

@@ -27,9 +27,16 @@ import java.util.concurrent.TimeUnit
  *
  * ## 视图放在哪
  *
- * 挂在 content view 的**最底层**（`addView(view, 0, ...)`），默认被 WebView 盖住。
- * M3 只要求 Surface 真实存在并能建出 EGL surface，不要求可见；等 M4 真正出画面时
- * 再把它翻到上层、同时隐藏 WebView。
+ * 默认压在内容下层（`addView(view, 0, ...)`），被 WebView 盖住 —— M3 只需要
+ * Surface 真实存在、能建出 EGL surface 即可，不要求可见。
+ *
+ * M4 要「肉眼可见」，于是 [attach] 多了 `overlay` 参数：为 true 时创建阶段就
+ * `setZOrderOnTop(true)`，surface 直接盖在 WebView 之上（游戏全屏形态）。
+ *
+ * **为什么必须在创建时决定**：`setZOrderOnTop` 改的是 surface 图层。创建后再改，
+ * 在部分实现/ROM 上会触发 `updateSurface()` 重建 Surface（`surfaceDestroyed` →
+ * `surfaceCreated`，`Surface` 换个新对象），而我们手里的 `ANativeWindow` 绑的是
+ * 旧的那块 —— EGL 不会报错，画面直接不更新。所以置顶与否一次性定死。
  *
  * ## 尺寸
  *
@@ -55,15 +62,31 @@ object GameSurface {
     /** surfaceCreated 只发一次，用闩锁让 Rust 侧能阻塞等待而不是轮询 */
     private val ready = CountDownLatch(1)
 
-    /** 在 `MainActivity.onCreate` 里调用（必须在 super.onCreate 之后） */
+    /** 当前是不是「盖住 WebView」的置顶模式 */
+    @Volatile
+    private var overlay = false
+
+    /**
+     * 在 `MainActivity.onCreate` 里调用（必须在 super.onCreate 之后）
+     *
+     * @param overlay true = surface 盖在 WebView 之上（游戏画面全屏）；false = 压在内容下层
+     */
     @JvmStatic
-    fun attach(activity: Activity) {
+    @JvmOverloads
+    fun attach(activity: Activity, overlay: Boolean = false) {
         if (host != null) {
             ensureAttached(activity)
             return
         }
 
         val view = SurfaceView(activity)
+        if (overlay) {
+            // 必须在 surface 创建之前：之后改会重建 Surface，已桥接的 ANativeWindow 作废
+            view.setZOrderOnTop(true)
+            view.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
+            Log.i(TAG, "SurfaceView 以「置顶」模式创建（会盖住 WebView）")
+        }
+        this.overlay = overlay
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 surface = holder.surface
@@ -112,15 +135,18 @@ object GameSurface {
         if (view.parent != null) {
             (view.parent as? ViewGroup)?.removeView(view)
         }
-        decor.addView(
-            view,
-            0,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+        val lp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
         )
-        Log.i(TAG, "SurfaceView 已挂到 decorView（位于内容下层）")
+        if (overlay) {
+            // 置顶模式：加在最后，surface 层本来就在 window 之上，view 顺序只影响触摸优先级
+            decor.addView(view, lp)
+            Log.i(TAG, "SurfaceView 已挂到 decorView（置顶，覆盖 WebView）")
+        } else {
+            decor.addView(view, 0, lp)
+            Log.i(TAG, "SurfaceView 已挂到 decorView（位于内容下层）")
+        }
     }
 
     /**
@@ -167,13 +193,29 @@ object GameSurface {
     @JvmStatic
     fun surfaceHeight(): Int = surfaceH
 
-    /** M4 用：把画面翻到最上层 / 收回底层 */
+    /**
+     * 收起 / 重新置顶画面（M4-a 的「演示完把 UI 还给用户」）。
+     *
+     * **务必在渲染结束后调**：`setZOrderOnTop` 会走 `updateSurface()`，
+     * 在 AOSP 实现里是改 SurfaceControl 的 layer（实测不重建 Surface，
+     * 日志里没有 surfaceDestroyed/surfaceCreated），但这是实现细节 ——
+     * 有些 ROM 会重建，届时桥接给 `libpojavexec` 的 `ANativeWindow` 就成了死指针。
+     * 所以别边渲染边切。
+     */
     @JvmStatic
-    fun setOnTop(onTop: Boolean) {
+    fun setOverlay(onTop: Boolean) {
         val v = host ?: return
         v.post {
-            v.bringToFront()
-            v.setZOrderMediaOverlay(onTop)
+            if (v.parent == null) {
+                return@post
+            }
+            overlay = onTop
+            v.setZOrderMediaOverlay(false)
+            v.setZOrderOnTop(onTop)
+            Log.i(TAG, "setOverlay($onTop)")
         }
     }
+
+    @JvmStatic
+    fun isOverlay(): Boolean = overlay
 }

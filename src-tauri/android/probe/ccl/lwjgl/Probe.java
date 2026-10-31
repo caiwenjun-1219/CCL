@@ -219,46 +219,315 @@ public final class Probe {
                 + " / " + glString("org.lwjgl.opengl.GL11", 0x1F00));
         step("gl.glsl", () -> glString("org.lwjgl.opengl.GL11", 0x8B8C));
 
-        // 真画一帧：清屏 + 交换缓冲。能走完说明整条 EGL surface 链是通的，
-        // 而不只是「上下文建起来了」。
+        // M4-a：真画，而且要**连着画**几秒。
         //
-        // 必须查 glGetError：上下文没 current 时这些调用是「静默无操作」，
-        // 上一版就是这样报了个假的 ok。
-        step("gl.frame", () -> {
+        // 只画一帧的话，画面在 SurfaceView 上闪一下就没了（EGL 的 buffer 会被
+        // 回收），截图根本抓不到，也就没法证明「人眼能看见」。这里跑 8 秒动画，
+        // 足够截到图。
+        step("gl.demo", () -> {
             if (window[0] == 0L) {
                 return "跳过（没有窗口）";
             }
-            Class<?> gl11 = cls("org.lwjgl.opengl.GL11");
-            java.lang.reflect.Method getErr = gl11.getMethod("glGetError");
-
-            gl11.getMethod("glViewport", int.class, int.class, int.class, int.class)
-                    .invoke(null, 0, 0, 854, 480);
-            int e1 = ((Number) getErr.invoke(null)).intValue();
-
-            gl11.getMethod("glClearColor", float.class, float.class, float.class, float.class)
-                    .invoke(null, 0.07f, 0.09f, 0.13f, 1.0f);
-            int e2 = ((Number) getErr.invoke(null)).intValue();
-
-            gl11.getMethod("glClear", int.class).invoke(null, 0x4000); // GL_COLOR_BUFFER_BIT
-            int e3 = ((Number) getErr.invoke(null)).intValue();
-
-            cls("org.lwjgl.glfw.GLFW")
-                    .getMethod("glfwSwapBuffers", long.class)
-                    .invoke(null, window[0]);
-
-            StringBuilder b = new StringBuilder();
-            b.append("viewport=0x").append(Integer.toHexString(e1))
-                    .append(" clearColor=0x").append(Integer.toHexString(e2))
-                    .append(" clear=0x").append(Integer.toHexString(e3));
-            if (e1 == 0 && e2 == 0 && e3 == 0) {
-                b.append(" 已清屏并交换缓冲");
-            } else {
-                b.append(" GL 报错，交换缓冲不能算成功");
-            }
-            return b.toString();
+            int[] wh = surfaceSize();
+            return drawDemo(window[0], wh[0], wh[1]);
         });
 
         return OUT.toString();
+    }
+
+    // =====================================================================
+    // M4-a：可见画面演示
+    // =====================================================================
+
+    private static final int GL_COLOR_BUFFER_BIT = 0x4000;
+    private static final int GL_VERTEX_SHADER = 0x8B31;
+    private static final int GL_FRAGMENT_SHADER = 0x8B30;
+    private static final int GL_COMPILE_STATUS = 0x8B81;
+    private static final int GL_LINK_STATUS = 0x8B82;
+    private static final int GL_TRIANGLES = 0x0004;
+    private static final int GL_SCISSOR_TEST = 0x0C11;
+
+    /** 演示时长：留足截图时间，又不至于让调试等太久 */
+    private static final long DEMO_MS = 8000;
+
+    /**
+     * 用 `gl_VertexID` 画三个顶点的三角形 —— 不需要任何 VBO / attribute。
+     *
+     * 选这条路是为了把「验证 shader 能不能编译链接」和「验证 VBO 通不通」
+     * 拆开：M4-a 只关心前者。MC 的真渲染一定会用 attribute + VBO，
+     * 但要等 M4-b 真正起游戏时再上，那时有完整的报错上下文。
+     */
+    private static final String VS_SRC =
+            "#version 300 es\n"
+                    + "uniform float uTime;\n"
+                    + "out vec4 vColor;\n"
+                    + "void main() {\n"
+                    + "  vec3 c;\n"
+                    + "  if (gl_VertexID == 0)      { gl_Position = vec4(-0.85, -0.65, 0.0, 1.0); c = vec3(1.0, 0.25, 0.25); }\n"
+                    + "  else if (gl_VertexID == 1) { gl_Position = vec4( 0.85, -0.65, 0.0, 1.0); c = vec3(0.25, 1.0, 0.35); }\n"
+                    + "  else                       { gl_Position = vec4( 0.0,   0.85, 0.0, 1.0); c = vec3(0.30, 0.55, 1.0); }\n"
+                    + "  vColor = vec4(c * (0.55 + 0.45 * sin(uTime * 2.0)), 1.0);\n"
+                    + "}\n";
+
+    private static final String FS_SRC =
+            "#version 300 es\n"
+                    + "precision mediump float;\n"
+                    + "in vec4 vColor;\n"
+                    + "out vec4 fragColor;\n"
+                    + "void main() { fragColor = vColor; }\n";
+
+    /** 从 `Bridge.surfaceInfo`（形如 `1440x2560（2 ms）`）里取宽高 */
+    private static int[] surfaceSize() {
+        String s = Bridge.surfaceInfo;
+        if (s != null) {
+            java.util.regex.Matcher m =
+                    java.util.regex.Pattern.compile("(\\d{3,5})x(\\d{3,5})").matcher(s);
+            if (m.find()) {
+                return new int[]{Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2))};
+            }
+        }
+        // 拿不到就退回 MC 的默认窗口尺寸，至少能看到东西
+        return new int[]{854, 480};
+    }
+
+    /**
+     * 连续渲染 {@link #DEMO_MS} 毫秒。
+     *
+     * 正常情况下走 shader（三角形脉动）；shader 编译/链接失败就退到
+     * scissor 色带 —— 后者只用 GL1.1，几乎不可能失败，能保证「一定有画面」。
+     */
+    private static String drawDemo(long win, int w, int h) throws Throwable {
+        Class<?> gl11 = cls("org.lwjgl.opengl.GL11");
+        Class<?> gl20 = cls("org.lwjgl.opengl.GL20");
+        Class<?> glfw = cls("org.lwjgl.glfw.GLFW");
+
+        java.lang.reflect.Method glViewport =
+                gl11.getMethod("glViewport", int.class, int.class, int.class, int.class);
+        java.lang.reflect.Method glClearColor =
+                gl11.getMethod("glClearColor", float.class, float.class, float.class, float.class);
+        java.lang.reflect.Method glClear = gl11.getMethod("glClear", int.class);
+        java.lang.reflect.Method glGetError = gl11.getMethod("glGetError");
+        java.lang.reflect.Method glDrawArrays =
+                gl11.getMethod("glDrawArrays", int.class, int.class, int.class);
+        java.lang.reflect.Method glEnable = gl11.getMethod("glEnable", int.class);
+        java.lang.reflect.Method glDisable = gl11.getMethod("glDisable", int.class);
+        java.lang.reflect.Method glScissor =
+                gl11.getMethod("glScissor", int.class, int.class, int.class, int.class);
+        java.lang.reflect.Method swap = glfw.getMethod("glfwSwapBuffers", long.class);
+        java.lang.reflect.Method glUseProgram = gl20.getMethod("glUseProgram", int.class);
+        java.lang.reflect.Method glUniform1f =
+                gl20.getMethod("glUniform1f", int.class, float.class);
+
+        int prog = 0;
+        String mode;
+        String shaderNote = "";
+        try {
+            prog = buildTriangleProgram();
+            mode = "shader 三角形";
+        } catch (Throwable t) {
+            mode = "scissor 色带（shader 不可用）";
+            shaderNote = " shader=" + brief(t);
+        }
+
+        long started = System.nanoTime();
+        long deadline = started + DEMO_MS * 1_000_000L;
+        int frames = 0;
+        int firstErr = 0;
+
+        glViewport.invoke(null, 0, 0, w, h);
+
+        while (System.nanoTime() < deadline) {
+            float t = (System.nanoTime() - started) / 1.0e9f;
+
+            // 背景：深蓝，随呼吸微微变亮，方便肉眼确认「这是活的画面」
+            float bg = 0.10f + 0.06f * (float) Math.sin(t * 1.5);
+            glClearColor.invoke(null, 0.04f, 0.06f, bg, 1.0f);
+            glClear.invoke(null, GL_COLOR_BUFFER_BIT);
+
+            if (prog != 0) {
+                glUseProgram.invoke(null, prog);
+                int loc = uniformLocation(prog, "uTime");
+                if (loc >= 0) {
+                    glUniform1f.invoke(null, loc, t);
+                }
+                glDrawArrays.invoke(null, GL_TRIANGLES, 0, 3);
+            } else {
+                // 24 条横带，色相整体滚动，看得出在动
+                final int bands = 24;
+                glEnable.invoke(null, GL_SCISSOR_TEST);
+                for (int i = 0; i < bands; i++) {
+                    int y = h * i / bands;
+                    int bh = h / bands;
+                    float[] rgb = hsv((t * 0.15f + (float) i / bands) % 1.0f);
+                    glClearColor.invoke(null, rgb[0], rgb[1], rgb[2], 1.0f);
+                    glScissor.invoke(null, 0, y, w, bh);
+                    glClear.invoke(null, GL_COLOR_BUFFER_BIT);
+                }
+                glDisable.invoke(null, GL_SCISSOR_TEST);
+            }
+
+            swap.invoke(null, win);
+            frames++;
+
+            int e = ((Number) glGetError.invoke(null)).intValue();
+            if (e != 0 && firstErr == 0) {
+                firstErr = e;
+            }
+            Thread.sleep(16);
+        }
+
+        StringBuilder b = new StringBuilder();
+        b.append("ok 帧数=").append(frames)
+                .append(" 尺寸=").append(w).append('x').append(h)
+                .append(" 模式=").append(mode);
+        if (firstErr != 0) {
+            b.append(" GL错误=0x").append(Integer.toHexString(firstErr));
+        }
+        b.append(shaderNote);
+
+        // 稳定的最后一帧 + 读回像素。
+        //
+        // MuMu 这类模拟器把应用放在独立的虚拟 display 上，`screencap` 换 display
+        // 只能拿到**冻结帧**（实测拿到的还是上一轮的画面），没法用它证明实时内容。
+        // 直接从 GPU 读回像素就没这个问题：读到什么就是这一帧真画出来的什么。
+        float tEnd = DEMO_MS / 1000.0f;
+        glClearColor.invoke(null, 0.04f, 0.06f, 0.10f, 1.0f);
+        glClear.invoke(null, GL_COLOR_BUFFER_BIT);
+        if (prog != 0) {
+            glUseProgram.invoke(null, prog);
+            int loc = uniformLocation(prog, "uTime");
+            if (loc >= 0) {
+                glUniform1f.invoke(null, loc, tEnd);
+            }
+            glDrawArrays.invoke(null, GL_TRIANGLES, 0, 3);
+        }
+        String px = samplePixels(gl11, w, h);
+        swap.invoke(null, win);
+
+        b.append(" 像素[").append(px).append(']');
+        return b.toString();
+    }
+
+    /**
+     * 从当前 back buffer 读三个点的 RGB。
+     *
+     * 必须是 **swapBuffers 之前**：双缓冲交换后 back buffer 内容未定义。
+     * 采样点按三角形的位置挑：中心与上中部在三角形内，左上角在背景里。
+     */
+    private static String samplePixels(Class<?> gl11, int w, int h) throws Throwable {
+        java.lang.reflect.Method rp = gl11.getMethod("glReadPixels",
+                int.class, int.class, int.class, int.class, int.class, int.class,
+                java.nio.ByteBuffer.class);
+
+        int[][] pts = {
+                {w / 2, h / 2, '中'},
+                {w / 2, (int) (h * 0.30), '上'},
+                {5, 5, '角'},
+        };
+        StringBuilder b = new StringBuilder();
+        for (int[] p : pts) {
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocateDirect(4);
+            rp.invoke(null, p[0], p[1], 1, 1, 0x1908 /*RGBA*/, 0x1401 /*UNSIGNED_BYTE*/, buf);
+            if (b.length() > 0) {
+                b.append(' ');
+            }
+            b.append((char) p[2]).append('(')
+                    .append(buf.get(0) & 0xFF).append(',')
+                    .append(buf.get(1) & 0xFF).append(',')
+                    .append(buf.get(2) & 0xFF).append(')');
+        }
+        return b.toString();
+    }
+
+    /** 编译 + 链接，返回 program；任何一步失败都抛异常（消息里带 infoLog） */
+    private static int buildTriangleProgram() throws Throwable {
+        Class<?> gl20 = cls("org.lwjgl.opengl.GL20");
+        int vs = compileShader(gl20, GL_VERTEX_SHADER, VS_SRC);
+        int fs = compileShader(gl20, GL_FRAGMENT_SHADER, FS_SRC);
+
+        int p = (Integer) gl20.getMethod("glCreateProgram").invoke(null);
+        if (p == 0) {
+            throw new IllegalStateException("glCreateProgram 返回 0");
+        }
+        gl20.getMethod("glAttachShader", int.class, int.class).invoke(null, p, vs);
+        gl20.getMethod("glAttachShader", int.class, int.class).invoke(null, p, fs);
+        gl20.getMethod("glLinkProgram", int.class).invoke(null, p);
+
+        int ok = (Integer) gl20.getMethod("glGetProgrami", int.class, int.class)
+                .invoke(null, p, GL_LINK_STATUS);
+        if (ok == 0) {
+            String log = (String) gl20.getMethod("glGetProgramInfoLog", int.class).invoke(null, p);
+            throw new IllegalStateException("链接失败: " + log);
+        }
+        return p;
+    }
+
+    private static int compileShader(Class<?> gl20, int type, String src) throws Throwable {
+        int s = (Integer) gl20.getMethod("glCreateShader", int.class).invoke(null, type);
+        if (s == 0) {
+            throw new IllegalStateException("glCreateShader(" + type + ") 返回 0（GL 没加载？）");
+        }
+        gl20.getMethod("glShaderSource", int.class, CharSequence.class).invoke(null, s, src);
+        gl20.getMethod("glCompileShader", int.class).invoke(null, s);
+
+        int ok = (Integer) gl20.getMethod("glGetShaderi", int.class, int.class)
+                .invoke(null, s, GL_COMPILE_STATUS);
+        if (ok == 0) {
+            String log = (String) gl20.getMethod("glGetShaderInfoLog", int.class).invoke(null, s);
+            throw new IllegalStateException(type + " 编译失败: " + log);
+        }
+        return s;
+    }
+
+    /**
+     * `glGetUniformLocation(int, ByteBuffer)`。
+     *
+     * fork 版只有 `ByteBuffer` 重载（`CharSequence` 那个上游版本没编进来），
+     * 所以自己拼一个 NUL 结尾的 direct buffer —— 不需要 MemoryUtil。
+     */
+    private static int uniformLocation(int prog, String name) throws Throwable {
+        byte[] raw = name.getBytes("UTF-8");
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.allocateDirect(raw.length + 1);
+        b.put(raw);
+        b.put((byte) 0);
+        b.flip();
+        Class<?> gl20 = cls("org.lwjgl.opengl.GL20");
+        return (Integer) gl20.getMethod("glGetUniformLocation", int.class, java.nio.ByteBuffer.class)
+                .invoke(null, prog, b);
+    }
+
+    /** HSV(0..1) → RGB(0..1)，只用于色带配色 */
+    private static float[] hsv(float hue) {
+        float h = (hue - (float) Math.floor(hue)) * 6.0f;
+        int i = (int) h;
+        float f = h - i;
+        float q = 1.0f - f;
+        switch (i % 6) {
+            case 0:  return new float[]{0.95f, f * 0.8f + 0.1f, 0.15f};
+            case 1:  return new float[]{q * 0.8f + 0.1f, 0.95f, 0.15f};
+            case 2:  return new float[]{0.15f, 0.95f, f * 0.8f + 0.1f};
+            case 3:  return new float[]{0.15f, q * 0.8f + 0.1f, 0.95f};
+            case 4:  return new float[]{f * 0.8f + 0.1f, 0.15f, 0.95f};
+            default: return new float[]{0.95f, 0.15f, q * 0.8f + 0.1f};
+        }
+    }
+
+    private static String brief(Throwable t) {
+        Throwable c = t;
+        StringBuilder b = new StringBuilder();
+        int depth = 0;
+        while (c != null && depth < 4) {
+            if (b.length() > 0) {
+                b.append(" <- ");
+            }
+            b.append(c.getClass().getSimpleName());
+            if (c.getMessage() != null) {
+                b.append(": ").append(c.getMessage().replace('\n', ' '));
+            }
+            c = c.getCause();
+            depth++;
+        }
+        return b.toString();
     }
 
     /** `glGetString(int)`：返回值是 String，拿不到就报错字符串 */

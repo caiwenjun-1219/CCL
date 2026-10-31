@@ -90,6 +90,44 @@ pub fn attach(dir: &std::path::Path, timeout_ms: i64) -> SurfaceInfo {
 }
 
 // ---------------------------------------------------------------------------
+// 图层控制（M4-a）
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_os = "android"))]
+pub fn set_overlay(_on_top: bool) {}
+
+/// 把游戏画面收回 WebView 下面（M4-a 演示结束后把 UI 还给用户）。
+///
+/// **只能在渲染结束之后调**：改 z-order 会让 SurfaceView 重建 Surface，
+/// 已经交给 `libpojavexec` 的 `ANativeWindow` 就此失效。
+/// Java 侧的 `GameSurface.setOverlay` 会先比对状态，没变就什么都不做。
+#[cfg(target_os = "android")]
+pub fn set_overlay(on_top: bool) {
+    use jni::objects::{JObject, JValue};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let r = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("包装 ART JavaVM 失败：{e}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|e| format!("attach ART 失败：{e}"))?;
+        let activity = unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) };
+        let cls = imp::load_app_class(&mut env, &activity, "com.caiwenjun.ccl.GameSurface")?;
+        env.call_static_method(&cls, "setOverlay", "(Z)V", &[JValue::Bool(on_top as u8)])
+            .map_err(|e| format!("调 GameSurface.setOverlay 失败：{e}"))?;
+        Ok(())
+    }));
+
+    match r {
+        Ok(Ok(())) => println!("[ccl-surface] setOverlay({on_top}) ok"),
+        Ok(Err(e)) => println!("[ccl-surface] setOverlay({on_top}) 失败：{e}"),
+        Err(_) => println!("[ccl-surface] setOverlay({on_top}) panic"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JNI 导出：由 Java 的 NativeBridge.setupWindowNative 调进来
 // ---------------------------------------------------------------------------
 
@@ -360,7 +398,7 @@ mod imp {
     }
 
     /// 用 Activity 的 ClassLoader 加载 App 自己的类（原生线程上 find_class 不可用）
-    fn load_app_class<'local>(
+    pub(super) fn load_app_class<'local>(
         env: &mut jni::JNIEnv<'local>,
         activity: &JObject,
         name: &str,
