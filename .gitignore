@@ -50,3 +50,6 @@ diag_single/
 # 调试截图/临时脚本
 .tmp/
 .tmp-shots/
+
+# 真机联调时从 MuMu 拉下来的 MC 数据（~1 GB）
+.tmp-mc/

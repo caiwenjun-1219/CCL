@@ -407,18 +407,24 @@ pub fn start(app: &AppHandle, instance_id: &str) -> Result<StartReport, String> 
         p.entries.len()
     );
 
-    // 画面要盖在 WebView 之上。M4-a 的演示结束后 overlay 会被收回下层，
-    // 真正启动游戏时得重新置顶 —— 否则游戏在跑，用户看到的还是启动器界面。
+    // 先把移植层解出来。解包本身要一两秒，顺带把「改图层」的时间窗让开。
     //
-    // `setZOrderOnTop` 是 post 到 UI 线程的，改完必须等一拍：
-    // 万一 ROM 重建了 Surface（`surfaceDestroyed` → `surfaceCreated`），
-    // 我们提前 attach 拿到的就是一块马上失效的 `ANativeWindow`。
-    crate::java::surface::set_overlay(true);
-    std::thread::sleep(std::time::Duration::from_millis(400));
-
     // 必须在建 VM 之前：ART 侧先 dlopen libpojavexec，JNI_OnLoad 才会占住
     // dalvikJavaVMPtr，内嵌 JVM 之后再加载时才记得下 runtimeJavaVMPtr。
     let lw = crate::java::lwjgl::ensure(app)?;
+
+    // 画面要盖在 WebView 之上。M4-a 的演示结束后 overlay 会被收回下层，
+    // 真正启动游戏时得重新置顶 —— 否则游戏在跑，用户看到的还是启动器界面。
+    //
+    // **不能只是「置顶 + sleep」**：vivo 这类 ROM 上 `setZOrderOnTop` 会重建
+    // SurfaceView 的 Surface，且是异步的（实测 surfaceDestroyed 之后 4 秒才来
+    // 新的 surfaceCreated）。所以要等到「重建后的那块」再 attach。
+    let prep = crate::java::surface::prepare_game_surface(8000);
+    println!("[launch] 置顶并等 Surface：{prep}");
+    if let Some(e) = prep.strip_prefix("ERR:") {
+        return Err(format!("切游戏画面失败：{e}"));
+    }
+
     let surface = crate::java::surface::attach(&lw.dir, 5000);
     println!(
         "[launch] surface ok={} {}x{} err={}",
@@ -477,6 +483,76 @@ pub fn start(app: &AppHandle, instance_id: &str) -> Result<StartReport, String> 
             p.main_class, p.java_major, entries, p.game_dir.trim_end_matches('/').to_string() + "/"
         ),
     })
+}
+
+/// 调试用：只建内嵌 VM 并跑一个主类，**不碰 Surface、不 dlopen libpojavexec**。
+///
+/// 真机（arm64 / vivo V2313A）上出现过「MC 刚进 main 一秒，VM Thread 在
+/// `free()` 里 SIGABRT，abort message 是 `Pointer tag ... was truncated`」。
+/// 同样的 JRE、同样的 GC 参数在 run-as shell 里跑是好的，说明问题只在
+/// 「in-process + pojavexec」这个组合里。这个入口用来二分：
+///
+/// - 本函数正常跑完 → 内嵌 HotSpot 本身没问题，嫌疑落在 pojavexec/bytehook
+/// - 本函数也崩 → 内嵌方式本身在 arm64 上有问题
+///
+/// 触发方式：`adb shell run-as com.caiwenjun.ccl touch CCL/auto-embed`，
+/// 然后把测试类放到 `CCL/tc/`（`-Djava.class.path` 指过去）。
+#[cfg(target_os = "android")]
+pub fn debug_run_class(app: &AppHandle, main_class: &str) -> Result<String, String> {
+    let java = crate::java::auto_select_java_with(app, 21, "debug")?;
+    let jre_home = PathBuf::from(&java.path)
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| format!("从 {} 推不出 JRE 根目录", java.path))?;
+
+    // 测试类目录 + shim.jar（shim 里只有 ccl.Boot，缺了也不影响）
+    let tc = crate::settings::data_dir(app).join("tc");
+    let cp = match crate::java::lwjgl::ensure(app) {
+        Ok(lw) => format!("{}:{}", tc.display(), lw.shim_jar.display()),
+        Err(_) => tc.to_string_lossy().to_string(),
+    };
+    println!("[debug-jvm] classpath={cp} main={main_class}");
+
+    // 可选：先把 libpojavexec 拉起来并桥接 Surface，完全复刻真实启动的前置状态。
+    // 存在 `<data>/with-pojavexec` 就做这一步 —— 用来二分「VM 本身」与
+    // 「pojavexec / bytehook 的介入」。
+    if crate::settings::data_dir(app).join("with-pojavexec").exists() {
+        match crate::java::lwjgl::ensure(app) {
+            Ok(lw) => {
+                let prep = crate::java::surface::prepare_game_surface(8000);
+                println!("[debug-jvm] 置顶并等 Surface：{prep}");
+                let s = crate::java::surface::attach(&lw.dir, 5000);
+                println!(
+                    "[debug-jvm] pojevec 桥接 ok={} {}x{} err={}",
+                    s.ok, s.width, s.height, s.error
+                );
+            }
+            Err(e) => println!("[debug-jvm] 解包 lwjgl 失败：{e}"),
+        }
+    }
+
+    let (vm, report) = crate::java::embedded::ensure_vm_for_launch(
+        app,
+        jre_home,
+        cp,
+        vec!["-Xmx256m".to_string()],
+    );
+    let Some(vm) = vm else {
+        return Err(format!("建 VM 失败：{}", report.verdict));
+    };
+    println!("[debug-jvm] VM ok，准备调用 {main_class}.main");
+
+    let log = crate::settings::data_dir(app)
+        .join("debug-jvm-out.log")
+        .to_string_lossy()
+        .to_string();
+    let r = invoke_main(vm, main_class, &[], &log);
+    match &r {
+        Ok(()) => println!("[debug-jvm] {main_class}.main 正常返回"),
+        Err(e) => println!("[debug-jvm] {main_class}.main 异常：{e}"),
+    }
+    r.map(|_| "ok".to_string())
 }
 
 /// 在已经建好的 VM 里调 `mainClass.main(String[])`。

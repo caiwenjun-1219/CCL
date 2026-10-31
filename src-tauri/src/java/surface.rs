@@ -127,6 +127,64 @@ pub fn set_overlay(on_top: bool) {
     }
 }
 
+#[cfg(not(target_os = "android"))]
+pub fn prepare_game_surface(_timeout_ms: i64) -> String {
+    "ERR:Surface 桥接只对 Android 有意义".into()
+}
+
+/// 切「游戏置顶」并等到一块可用 Surface，返回 `OK|...` / `ERR:...`。
+///
+/// **必须在 [`attach`] 之前调**。原因见 `GameSurface.prepareGameSurface` 的注释：
+/// vivo 等 ROM 上 `setZOrderOnTop` 会重建 SurfaceView 的 Surface，而重建是异步的
+/// （实测 `surfaceDestroyed` 之后 4 秒才来新的 `surfaceCreated`）。
+/// 早期实现只是「置顶 → sleep(400ms) → attach」，在真机上必然拿到死 Surface。
+#[cfg(target_os = "android")]
+pub fn prepare_game_surface(timeout_ms: i64) -> String {
+    use jni::objects::{JObject, JValue};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let r = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("包装 ART JavaVM 失败：{e}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|e| format!("attach ART 失败：{e}"))?;
+        let activity = unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) };
+        let cls = imp::load_app_class(&mut env, &activity, "com.caiwenjun.ccl.GameSurface")?;
+        let v = env
+            .call_static_method(
+                &cls,
+                "prepareGameSurface",
+                "(J)Ljava/lang/String;",
+                &[JValue::Long(timeout_ms)],
+            )
+            .map_err(|e| format!("调 GameSurface.prepareGameSurface 失败：{e}"))?;
+        let obj = v.l().map_err(|e| format!("返回值不是对象：{e}"))?;
+        if obj.is_null() {
+            return Ok("ERR:prepareGameSurface 返回 null".into());
+        }
+        let s: String = env
+            .get_string(&jni::objects::JString::from(obj))
+            .map_err(|e| format!("读返回字符串失败：{e}"))?
+            .to_string_lossy()
+            .to_string();
+        Ok(s)
+    }));
+
+    match r {
+        Ok(Ok(s)) => {
+            println!("[ccl-surface] prepareGameSurface -> {s}");
+            s
+        }
+        Ok(Err(e)) => {
+            println!("[ccl-surface] prepareGameSurface 失败：{e}");
+            format!("ERR:{e}")
+        }
+        Err(_) => "ERR:prepareGameSurface panic".into(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JNI 导出：由 Java 的 NativeBridge.setupWindowNative 调进来
 // ---------------------------------------------------------------------------

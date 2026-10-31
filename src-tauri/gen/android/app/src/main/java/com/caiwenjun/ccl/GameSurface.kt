@@ -1,14 +1,13 @@
 package com.caiwenjun.ccl
 
 import android.app.Activity
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /**
  * 游戏画面用的 SurfaceView（M3 里程碑）
@@ -59,8 +58,17 @@ object GameSurface {
     @Volatile
     private var surfaceH = 0
 
-    /** surfaceCreated 只发一次，用闩锁让 Rust 侧能阻塞等待而不是轮询 */
-    private val ready = CountDownLatch(1)
+    /** Surface 回调与等待方之间不需要额外的锁：字段都是 @Volatile，等待方按 50ms 轮询 */
+    private const val POLL_MS = 50L
+
+    /**
+     * 第几代 Surface。
+     *
+     * 每次 `surfaceCreated` 自增。改 z-order 在某些 ROM（本机 vivo 就是）上会
+     * 重建 Surface，等待方靠它判断「有没有换过一块新画布」。
+     */
+    @Volatile
+    private var generation = 0
 
     /** 当前是不是「盖住 WebView」的置顶模式 */
     @Volatile
@@ -92,8 +100,8 @@ object GameSurface {
                 surface = holder.surface
                 surfaceW = view.width
                 surfaceH = view.height
-                Log.i(TAG, "surfaceCreated ${surfaceW}x${surfaceH}")
-                ready.countDown()
+                generation++
+                Log.i(TAG, "surfaceCreated ${surfaceW}x${surfaceH} gen=$generation")
             }
 
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
@@ -102,7 +110,6 @@ object GameSurface {
                 surfaceW = w
                 surfaceH = h
                 Log.i(TAG, "surfaceChanged ${w}x${h} format=$format")
-                ready.countDown()
             }
 
             override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -169,20 +176,85 @@ object GameSurface {
      *
      * 从 Rust 的普通工作线程调用，最长阻塞 [timeoutMs] 毫秒；超时返回 null。
      * 不返回 `Unit` 也不抛异常，调用方（Rust）只看返回值是否存在。
+     *
+     * **不能再用一次性闩锁**：`surfaceDestroyed` 之后那块 Surface 就作废了，
+     * 而闩锁已经被前面那次 `surfaceCreated` 消耗掉，后来者会「立刻返回 null」，
+     * 现象是超时 5000 ms 的消息 0.4 秒就打出来了（vivo V2313A 上实测）。
+     * 改成「按条件等、条件变就唤醒」，销毁后再建也能正常等到。
      */
     @JvmStatic
     fun awaitSurface(timeoutMs: Long): Surface? {
-        val current = surface
-        if (current != null) {
-            return current
-        }
-        return try {
-            if (ready.await(timeoutMs, TimeUnit.MILLISECONDS)) surface else null
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            null
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (true) {
+            val s = surface
+            if (s != null && s.isValid()) {
+                return s
+            }
+            if (SystemClock.uptimeMillis() >= deadline) {
+                return null
+            }
+            try {
+                Thread.sleep(POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
         }
     }
+
+    /**
+     * 切到「游戏置顶」并把一块**可用且稳定**的 Surface 准备好（M4-b-2 真机修复）。
+     *
+     * ## 为什么单独一个入口
+     *
+     * `setZOrderOnTop` 在 vivo 这类 ROM 上会重建 Surface：`surfaceDestroyed`
+     * 之后隔几秒才来新的 `surfaceCreated`。之前的做法是「置顶 → sleep(400)
+     * → attach」，正好骑在销毁窗口上，拿到的是死 Surface（或者 null）。
+     *
+     * 这里改成事件驱动：
+     * - 若 generation 变了（= 真的重建了）→ 等新的一块可用再返回
+     * - 若在 [SETTLE_MS] 内一直没重建且 Surface 始终可用 → 说明这个 ROM
+     *   是原地改图层（MuMu 就是），用当前这块即可
+     *
+     * @return `OK|...` 或 `ERR:...`
+     */
+    @JvmStatic
+    fun prepareGameSurface(timeoutMs: Long): String {
+        val before = generation
+        setOverlay(true)
+
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        var stableSince = 0L
+        while (true) {
+            val now = SystemClock.uptimeMillis()
+            val s = surface
+            val usable = s != null && s.isValid()
+            if (usable && generation != before) {
+                return "OK|重建 gen=$before→$generation ${surfaceW}x${surfaceH}"
+            }
+            if (usable) {
+                if (stableSince == 0L) {
+                    stableSince = now
+                } else if (now - stableSince >= SETTLE_MS) {
+                    return "OK|原地 gen=$generation ${surfaceW}x${surfaceH}"
+                }
+            } else {
+                stableSince = 0L
+            }
+            if (now >= deadline) {
+                return "ERR:置顶后 ${timeoutMs} ms 内没有可用 Surface（gen $before→$generation，surface=${if (s == null) "null" else "invalid"}）"
+            }
+            try {
+                Thread.sleep(POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return "ERR:等待 Surface 时被中断"
+            }
+        }
+    }
+
+    /** 置顶后「没重建」的判定窗口：这段时间内 Surface 一直可用就认为是一次原地改图层 */
+    private const val SETTLE_MS = 600L
 
     @JvmStatic
     fun currentSurface(): Surface? = surface

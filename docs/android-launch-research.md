@@ -790,11 +790,118 @@ M4-a 的探针（只画几个彩色三角形、上传很小的纹理）从来没
 
 ### 6.6 交互与退出的现状
 
-- 启动前 `set_overlay(true)`（`setZOrderOnTop` 走 UI 线程 post，所以等 400 ms
-  再 attach，避免拿到一块马上要被重建的 `ANativeWindow`）
+- 启动前走 `prepareGameSurface(8000)`：置顶 + **等一块真正可用的 Surface**（见 6.7.1）
 - SurfaceView 置顶后吃掉了触摸，WebView 点不到 —— 输入桥（M4-b-3）之前，
   **想回启动器只能重启 App**
 - 状态栏/导航栏没有隐藏，是下一步的事
+
+### 6.7 真机验证（vivo V2313A / arm64 / Android 14，2026-10-31）
+
+设备：`PD2313` / V2313A，`arm64-v8a`，Android 14 (SDK 34)，SoC `holi`。
+
+#### 6.7.1 第一个真机 bug：置顶会重建 Surface，而等待用的是一次性闩锁
+
+MuMu 上 `setZOrderOnTop` 是原地改图层，真机不是：
+
+```
+19:35:19.322  setOverlay(true)
+19:35:19.716  surfaceDestroyed          ← 3 毫秒内旧 Surface 就废了
+19:35:23.401  surfaceCreated 1080x2400  ← 4 秒后才来新的
+```
+
+而 `GameSurface.awaitSurface` 当时用的是 `CountDownLatch(1)`：闩锁在**第一次**
+`surfaceCreated` 就被消耗掉，之后 `surface == null` 时会**立刻返回 null**。
+于是日志里出现了自相矛盾的一行：
+
+```
+[launch] surface ok=false 0x0 err=等了 5000 ms 也没等到 SurfaceView 的 Surface
+```
+
+—— 说是等了 5000 ms，实际 0.4 秒就返回了。
+
+修法（`GameSurface.kt`）：
+
+- 加 `@Volatile generation`，每次 `surfaceCreated` 自增
+- `awaitSurface` 改成 50ms 轮询，直到 `surface != null && isValid()` 或超时
+- 新增 `prepareGameSurface(timeoutMs)`：置顶后等「generation 变了」的那块；
+  若某个 ROM 是原地改图层（MuMu），则在 600ms 稳定窗口后直接用当前这块
+
+修完真机日志：
+
+```
+[launch] 置顶并等 Surface：OK|原地 gen=1 1080x2400
+[launch] surface ok=true 1080x2400
+[launch] VM ok，java.home=.../jre21-arm64
+[launch] 调用 net.minecraft.client.main.Main.main(...)
+```
+
+#### 6.7.2 还没解决：MC 进 main 一秒后 VM Thread 里 SIGABRT
+
+```
+Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 21728 (VM Thread)
+Abort message: 'Pointer tag for 0x729ea0ea90 was truncated,
+                see 'https://source.android.com/devices/tech/debug/tagged-pointers'.'
+#00 libc.so (abort+168)
+#01 libc.so (free+108)
+#02..09 libjvm.so（已 strip，符号化不出）
+#10 libc.so (__pthread_start)
+```
+
+含义：scudo 在 `free()` 里发现这块指针的 tag 对不上（被重复释放 / 指针被写坏 /
+或释放的压根不是 malloc 出来的内存）。MC 自己的 `latest.log` 一个字都没写，
+说明崩在极早的类加载阶段。
+
+**二分过程**（每一步都真实跑过）：
+
+| 场景 | 结果 |
+| --- | --- |
+| JRE 在 `run-as` shell 里单独跑（G1 + 6×48MB 分配 + 6 次 `System.gc()`） | ✅ 正常 |
+| 内嵌 VM 跑测试类（**不**加载 `libpojavexec`） | ✅ 正常 |
+| 内嵌 VM 跑测试类 + `dlopen libpojavexec` + 桥接 Surface | ✅ 正常 |
+| 内嵌 VM 跑 MC 的 `main` | ❌ 1 秒内 SIGABRT |
+| 同上 + `-XX:+UseSerialGC` | ❌ 一样崩 |
+| 同上 + `-XX:TieredStopAtLevel=4`（放开 C2） | 未测完（见环境坑） |
+
+结论：**不是内嵌方式的问题，不是 pojavexec / bytehook 的问题，也不是 GC 的问题**，
+只剩 MC 自己的启动路径。下一步用 JVM 自身的 unified logging 抓「崩溃前最后一个动作」：
+
+```bash
+# <data>/java/jvm-opts.txt
+-Xlog:class+load=info,class+unload=info,vmoperation=info:file=/data/user/0/com.caiwenjun.ccl/.minecraft/versions/1.21.1/logs/jvm-xlog.txt
+```
+
+（`-Xlog` 直接写文件，不依赖已经死掉的 fd 1，所以比 `System.out` 可靠。）
+
+#### 6.7.3 真机环境搭建（真机上原本什么都没有）
+
+1. 打 **arm64 debug** 包：`bash build-android.sh arm64 debug`（release 包不可 `run-as`，
+   而所有排查都靠 `run-as` 读日志）
+2. Java 17 由 App 内置，进首启页点一下「安装 Java 运行时」即可（本地解包，不联网）
+3. **Java 21 需要自己塞**（MC 1.21.1 要 21，包里只内置了 17）：
+   - 取 `jre21-multiarch.json` → 下 `jre21-universal.tar.xz` + `jre21-bin-arm64.tar.xz`，
+     sha256 逐个核对（GitHub 直连被 reset，走 `eo.gh-proxy.cn`）
+   - **设备端 toybox 的 tar 不支持 xz**（`tar: exec xz: No such file`），所以在 PC 上
+     先用 Python `lzma` 解成普通 tar 再 push
+   - 解到 `CCL/java/jre21-arm64/`，`chmod -R 755 bin` + 给 `lib/**/*.so` 打可执行位
+   - 验证：`LD_LIBRARY_PATH=$PWD/lib:$PWD/lib/server ./bin/java -version`
+4. **MC 1.21.1 直接复用 MuMu 里那套完整安装**（真机重下要几百兆，且镜像不一定通）：
+   - MuMu 侧 `adb exec-out "run-as ... tar -cf - assets libraries versions ..."` 拉成 tar
+     （924 MB，34 秒）
+   - 真机侧 `adb push` 到 `/data/local/tmp/mc.tar` 再 `tar -xf`（888 MB，2 秒）
+   - **不能走管道**：`adb shell ... "tar -xf -" < mc.tar` 会报 `tar: EOF: Illegal seek`，
+     toybox 的 tar 从 stdin 读不能 seek
+   - 实例靠扫描 `.minecraft/versions/*/CCL/instance.json` 自动发现，不用另外登记
+
+#### 6.7.4 真机测试的环境坑（会伪装成代码 bug）
+
+| 现象 | 真因 |
+| --- | --- |
+| 日志停在 `[launch] JRE=...` 再无下文，像卡死 | 手机被切到别的 App / 锁屏 → Surface 销毁 + 进程被冻结 |
+| `INSTALL_FAILED_ABORTED: User rejected permissions` | 锁屏状态下系统安装确认弹窗被丢弃，**解锁后重装即可** |
+| `ERR:置顶后 8000 ms 内没有可用 Surface（gen 1→1，surface=null）` | 应用不在前台，Surface 早就销毁了 |
+
+跑测试前必须做三件事：`svc power stayon true`、`input keyevent KEYCODE_WAKEUP` +
+`wm dismiss-keyguard`、并检查 `topResumedActivity` 确实是 `com.caiwenjun.ccl`。
 
 ## 调试开关
 
@@ -804,6 +911,8 @@ M4-a 的探针（只画几个彩色三角形、上传很小的纹理）从来没
 | `<data>/auto-launch`  | `/data/user/0/com.caiwenjun.ccl/CCL`（空文件即可）       | 启动 5 秒后自动用第一个实例跑 `launch::start`（M4-b-2） |
 | `<data>/auto-probe`   | 同上（空文件即可）                                       | 启动 6 秒后自动跑一遍 JVM/LWJGL/首帧探针并打 logcat |
 | `<data>/auto-plan`    | 同上                                              | 启动 3 秒后算一次 M4-b 启动计划并打 logcat（M4-b-1） |
+| `<data>/auto-embed`   | 同上                                              | 启动 3 秒后**只**建内嵌 VM 并跑 `CCL/tc` 下的测试类 `T`，不加载 pojavexec（6.7.2 的二分手段） |
+| `<data>/with-pojavexec` | 同上（配合 `auto-embed`）                            | 额外先 `dlopen libpojavexec` + 桥接 Surface，再建 VM |
 | Intent `ccl_overlay`  | 启动参数                                            | `--ez ccl_overlay true` 让 SurfaceView 盖住 WebView（M4-a） |
 
 三个 `auto-*` 开关**互斥**（`else if` 链）：内嵌 JVM 一个进程只能建一次，

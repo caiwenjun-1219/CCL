@@ -219,6 +219,17 @@ pub fn run() {
                             Err(e) => println!("[plan] ERR {e}"),
                         }
                     });
+                } else if data.join("auto-embed").exists() {
+                    // 只建内嵌 VM + 跑 CCL/tc 下的测试类，不加载 libpojavexec。
+                    // 用来二分「内嵌 HotSpot 本身」vs「pojavexec/bytehook 的介入」。
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        match java::launch::debug_run_class(&h, "T") {
+                            Ok(v) => println!("[debug-jvm] 结果 {v}"),
+                            Err(e) => println!("[debug-jvm] ERR {e}"),
+                        }
+                    });
                 }
             }
 
