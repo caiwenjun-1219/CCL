@@ -49,3 +49,4 @@ diag_single/
 
 # 调试截图/临时脚本
 .tmp/
+.tmp-shots/

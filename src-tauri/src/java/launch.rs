@@ -71,6 +71,8 @@ pub struct LaunchPlan {
     pub assets_dir: String,
     pub library_path: String,
 
+    /// 版本 JSON 要求的 Java 主版本（选 JRE 用）
+    pub java_major: u32,
     /// 生成过程中的取舍（剔了哪些库、改了哪些参数），排查时最先看这里
     pub notes: Vec<String>,
     /// 是否还能建 VM。VM 已建过时为 `false`，此时 classpath 已锁死
@@ -105,6 +107,13 @@ pub fn plan(app: &AppHandle, instance_id: &str) -> Result<LaunchPlan, String> {
         .and_then(|v| v.as_str())
         .ok_or("版本 JSON 里没有 mainClass")?
         .to_string();
+
+    // Java 主版本优先取 JSON 的声明（最准），缺失时按 MC 版本号推断
+    let java_major = vjson
+        .pointer("/javaVersion/majorVersion")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or_else(|| crate::java::required_java_major(&instance.minecraft_version));
 
     // ---- classpath -------------------------------------------------------
     // 我们的两个 jar 无条件排最前：shim 压过 fat jar 里的 v2 CallbackBridge，
@@ -320,6 +329,7 @@ pub fn plan(app: &AppHandle, instance_id: &str) -> Result<LaunchPlan, String> {
         instance_id: instance_id.to_string(),
         version_id,
         main_class,
+        java_major,
         entries: entries
             .iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -334,4 +344,313 @@ pub fn plan(app: &AppHandle, instance_id: &str) -> Result<LaunchPlan, String> {
         notes,
         vm_ready,
     })
+}
+
+// ---------------------------------------------------------------------------
+// 真正启动（M4-b-2）
+// ---------------------------------------------------------------------------
+
+/// 一次启动的即时结果。**不含游戏运行状态** —— 游戏跑在独立线程里，
+/// 后续输出走 `<gameDir>/logs/latest.log`。
+#[derive(Debug, Clone, Serialize)]
+pub struct StartReport {
+    pub version_id: String,
+    pub main_class: String,
+    pub java_home: String,
+    pub vm_ok: bool,
+    pub vm_error: String,
+    pub surface_ok: bool,
+    pub surface_info: String,
+    pub classpath_entries: usize,
+    pub verdict: String,
+}
+
+/// 真正启动游戏。**同步函数，调用方要放到阻塞线程里**（会等 VM 建好）。
+///
+/// 四步顺序不能换：
+///
+/// 1. [`plan`] 算 classpath —— VM 只能按它建一次
+/// 2. `surface::attach` 把 Activity 的 Surface 交给 `libpojavexec`
+///    （`pojavInit` 要在 MC 调 `glfwInit` 之前把 native window 准备好，
+///    而且 ART 必须先 dlopen 一次 so，`JNI_OnLoad` 才会记下 dalvik VM）
+/// 3. 建 VM
+/// 4. 起一条**普通线程**跑 `mainClass.main`
+///
+/// 第 4 步不能挂在 tokio 的 runtime 线程上：MC 的 main 会一直跑到游戏退出。
+pub fn start(app: &AppHandle, instance_id: &str) -> Result<StartReport, String> {
+    let p = plan(app, instance_id)?;
+    if !p.vm_ready {
+        return Err(
+            "内嵌 JVM 已经用别的 classpath 建好了（多半是跑过 M2/M3 探针），重启 App 后再启动游戏"
+                .into(),
+        );
+    }
+
+    // MC 的 log4j 配置里文件名是相对路径 `logs/latest.log`，而 App 进程的
+    // cwd 是 `/`，于是它去建 `/logs` —— 没权限，整个日志系统静默失效
+    // （现象是 games 目录下永远没有 latest.log）。切到游戏目录解决。
+    // 进程级 chdir，会影响同进程其它线程，但 App 里没人依赖 cwd。
+    std::env::set_current_dir(&p.game_dir)
+        .map_err(|e| format!("切换工作目录到 {} 失败：{e}", p.game_dir))?;
+    println!("[launch] cwd={}", p.game_dir);
+
+    let java = crate::java::auto_select_java_with(app, p.java_major, &p.version_id)?;
+    let jre_home = std::path::PathBuf::from(&java.path)
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| format!("从 {} 推不出 JRE 根目录", java.path))?;
+    println!(
+        "[launch] JRE={}（要求 Java {}），classpath {} 条",
+        java.path,
+        p.java_major,
+        p.entries.len()
+    );
+
+    // 画面要盖在 WebView 之上。M4-a 的演示结束后 overlay 会被收回下层，
+    // 真正启动游戏时得重新置顶 —— 否则游戏在跑，用户看到的还是启动器界面。
+    //
+    // `setZOrderOnTop` 是 post 到 UI 线程的，改完必须等一拍：
+    // 万一 ROM 重建了 Surface（`surfaceDestroyed` → `surfaceCreated`），
+    // 我们提前 attach 拿到的就是一块马上失效的 `ANativeWindow`。
+    crate::java::surface::set_overlay(true);
+    std::thread::sleep(std::time::Duration::from_millis(400));
+
+    // 必须在建 VM 之前：ART 侧先 dlopen libpojavexec，JNI_OnLoad 才会占住
+    // dalvikJavaVMPtr，内嵌 JVM 之后再加载时才记得下 runtimeJavaVMPtr。
+    let lw = crate::java::lwjgl::ensure(app)?;
+    let surface = crate::java::surface::attach(&lw.dir, 5000);
+    println!(
+        "[launch] surface ok={} {}x{} err={}",
+        surface.ok, surface.width, surface.height, surface.error
+    );
+    if !surface.ok {
+        return Err(format!("Surface 桥接失败：{}", surface.error));
+    }
+
+    // plan 算出来的 JVM 参数（-Xmx / -Djna.tmpdir / libltw 等）必须在这里注进去：
+    // 建 VM 是唯一能让这些 -D 生效的时机。
+    let (vm, report) = crate::java::embedded::ensure_vm_for_launch(
+        app,
+        jre_home.clone(),
+        p.classpath.clone(),
+        p.jvm_args.clone(),
+    );
+    let Some(vm) = vm else {
+        return Err(format!("建 VM 失败：{}", report.verdict));
+    };
+    println!("[launch] VM ok，java.home={}", report.java_home);
+
+    let main_class = p.main_class.clone();
+    let args = p.game_args.clone();
+    let entries = p.entries.len();
+    // JVM 的 stdout/err 在 Android 上没接 logcat，落到游戏目录里
+    let stdout_log = std::path::Path::new(&p.game_dir)
+        .join("logs")
+        .join("ccl-jvm-out.log")
+        .to_string_lossy()
+        .to_string();
+    let log_for_thread = stdout_log.clone();
+    std::thread::spawn(move || {
+        println!("[launch] 主线程启动：{main_class}（{} 个参数）", args.len());
+        match invoke_main(vm, &main_class, &args, &log_for_thread) {
+            Ok(()) => println!("[launch] main 返回了（游戏正常退出）"),
+            Err(e) => println!("[launch] main 异常：{e}"),
+        }
+    });
+
+    Ok(StartReport {
+        version_id: p.version_id.clone(),
+        main_class: p.main_class.clone(),
+        java_home: jre_home.to_string_lossy().to_string(),
+        vm_ok: report.vm_ok,
+        vm_error: if report.vm_ok {
+            String::new()
+        } else {
+            report.verdict.clone()
+        },
+        surface_ok: surface.ok,
+        surface_info: format!("{}x{}", surface.width, surface.height),
+        classpath_entries: entries,
+        verdict: format!(
+            "已发起启动：{}（Java {}，{} 条 classpath）。游戏日志见 {}logs/latest.log",
+            p.main_class, p.java_major, entries, p.game_dir.trim_end_matches('/').to_string() + "/"
+        ),
+    })
+}
+
+/// 在已经建好的 VM 里调 `mainClass.main(String[])`。
+///
+/// `stdout_log` 是把 JVM 的 `System.out/err` 引过去的文件 —— Android 上
+/// 内嵌 JVM 的 fd 1/2 是丢的，不接出来就完全看不到 MC 的进度和堆栈。
+fn invoke_main(
+    vm: &jni::JavaVM,
+    main_class: &str,
+    args: &[String],
+    stdout_log: &str,
+) -> Result<(), String> {
+    use jni::objects::{JObject, JValue};
+
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach 到 JVM 失败：{e}"))?;
+
+    // **必须走 ClassLoader，不能用 `FindClass`。**
+    //
+    // JNI 规范说「没有关联 Java 帧时用 system class loader」，但 attach 出来的
+    // 原生线程里 HotSpot 实际把它落在 bootstrap loader 上，`-Djava.class.path`
+    // 上的类一个都找不到（实测报的是含糊的 `Java exception was thrown`）。
+    let loader = env
+        .call_static_method(
+            "java/lang/ClassLoader",
+            "getSystemClassLoader",
+            "()Ljava/lang/ClassLoader;",
+            &[],
+        )
+        .and_then(|v| v.l())
+        .map_err(|e| format!("取系统 ClassLoader 失败：{e}"))?;
+
+    // 先接日志，后面无论出什么事都能在文件里看到
+    match load_class(&mut env, &loader, "ccl.Boot") {
+        Ok(boot) => {
+            let path = env
+                .new_string(stdout_log)
+                .map_err(|e| format!("日志路径转 jstring 失败：{e}"))?;
+            match env.call_static_method(
+                &boot,
+                "redirect",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(path.as_ref())],
+            ) {
+                Ok(v) => {
+                    let msg = v
+                        .l()
+                        .ok()
+                        .and_then(|o| read_string(&mut env, o))
+                        .unwrap_or_default();
+                    if msg.is_empty() {
+                        println!("[launch] JVM 输出已重定向到 {stdout_log}");
+                    } else {
+                        println!("[launch] 日志重定向失败（不影响启动）：{msg}");
+                    }
+                }
+                Err(e) => println!("[launch] Boot.redirect 调用失败：{e}"),
+            }
+        }
+        Err(e) => println!("[launch] 加载 ccl.Boot 失败（不影响启动）：{e}"),
+    }
+
+    let class = load_class(&mut env, &loader, main_class)?;
+
+    let arr = env
+        .new_object_array(args.len() as i32, "java/lang/String", JObject::null())
+        .map_err(|e| format!("建参数数组失败：{e}"))?;
+    for (i, a) in args.iter().enumerate() {
+        let s = env
+            .new_string(a)
+            .map_err(|e| format!("参数 {i} 转 jstring 失败：{e}"))?;
+        env.set_object_array_element(&arr, i as i32, &s)
+            .map_err(|e| format!("写参数 {i} 失败：{e}"))?;
+    }
+
+    println!("[launch] 调用 {main_class}.main(...)");
+    let r = env.call_static_method(
+        &class,
+        "main",
+        "([Ljava/lang/String;)V",
+        &[JValue::Object(arr.as_ref())],
+    );
+    match r {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let thrown = describe_exception(&mut env);
+            Err(format!("{e}{thrown}"))
+        }
+    }
+}
+
+/// `ClassLoader.loadClass(name)`。
+fn load_class<'l>(
+    env: &mut jni::JNIEnv<'l>,
+    loader: &jni::objects::JObject<'l>,
+    name: &str,
+) -> Result<jni::objects::JClass<'l>, String> {
+    use jni::objects::{JClass, JValue};
+
+    let jname = env
+        .new_string(name)
+        .map_err(|e| format!("类名转 jstring 失败：{e}"))?;
+    let loaded = env
+        .call_method(
+            loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(jname.as_ref())],
+        )
+        .and_then(|v| v.l());
+    match loaded {
+        Ok(c) => Ok(JClass::from(c)),
+        Err(e) => {
+            let thrown = describe_exception(env);
+            Err(format!("加载 {name} 失败：{e}{thrown}"))
+        }
+    }
+}
+
+/// `JString` → Rust `String`
+fn read_string(env: &mut jni::JNIEnv, obj: jni::objects::JObject) -> Option<String> {
+    let s = jni::objects::JString::from(obj);
+    env.get_string(&s)
+        .ok()
+        .map(|v| v.to_string_lossy().to_string())
+}
+
+/// 把挂起的 Java 异常捞出来，否则只剩一句「Java exception occurred」没法排查。
+///
+/// **不能用 `exception_describe`**：它是把堆栈写到 `System.err`，而内嵌 JVM 的
+/// fd 2 在 Android 上没接到 logcat，等于扔进黑洞。这里改成走 JNI 反射，
+/// 把 `toString()` 和前几帧 `getStackTrace()` 拼成字符串由 Rust 打出来。
+fn describe_exception(env: &mut jni::JNIEnv) -> String {
+    use jni::objects::JObjectArray;
+
+    if !env.exception_check().unwrap_or(false) {
+        return String::new();
+    }
+    let Ok(ex) = env.exception_occurred() else {
+        let _ = env.exception_clear();
+        return String::new();
+    };
+    let _ = env.exception_clear();
+
+    let to_rust = read_string;
+
+    let mut out = String::new();
+    if let Ok(v) = env.call_method(&ex, "toString", "()Ljava/lang/String;", &[]) {
+        if let Ok(s) = v.l() {
+            if let Some(t) = to_rust(env, s) {
+                out.push_str(&format!("
+  ↳ {t}"));
+            }
+        }
+    }
+    if let Ok(v) = env.call_method(&ex, "getStackTrace", "()[Ljava/lang/StackTraceElement;", &[]) {
+        if let Ok(a) = v.l() {
+            let arr = JObjectArray::from(a);
+            let n = env.get_array_length(&arr).unwrap_or(0).min(8);
+            for i in 0..n {
+                let Ok(e) = env.get_object_array_element(&arr, i) else {
+                    continue;
+                };
+                let Ok(v) = env.call_method(&e, "toString", "()Ljava/lang/String;", &[]) else {
+                    continue;
+                };
+                let Ok(o) = v.l() else { continue };
+                if let Some(t) = to_rust(env, o) {
+                    out.push_str(&format!("
+    at {t}"));
+                }
+            }
+        }
+    }
+    out
 }

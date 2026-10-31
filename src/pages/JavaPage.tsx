@@ -24,6 +24,7 @@ import {
   type EmbeddedReport,
   type LwjglReport,
   type LaunchPlan,
+  type StartReport,
   type Instance,
 } from "../lib/tauri";
 import { isMobile } from "../lib/env";
@@ -63,6 +64,10 @@ export default function JavaPage() {
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   const [planErr, setPlanErr] = useState<string | null>(null);
+  // ---- 真正启动（M4-b-2）
+  const [started, setStarted] = useState<StartReport | null>(null);
+  const [startBusy, setStartBusy] = useState(false);
+  const [startErr, setStartErr] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -175,7 +180,25 @@ export default function JavaPage() {
     }
   };
 
+  const runLaunch = async () => {
+    if (!instId) {
+      showToast("先创建一个实例", "bad");
+      return;
+    }
+    setStartBusy(true);
+    setStartErr(null);
+    setStarted(null);
+    try {
+      setStarted(await api.androidLaunchGame(instId));
+    } catch (e) {
+      setStartErr(String(e));
+    } finally {
+      setStartBusy(false);
+    }
+  };
+
   const isAndroid = env?.is_android_jre ?? false;
+
   const versions = env?.supported_majors?.length
     ? env.supported_majors
     : isAndroid
@@ -447,6 +470,14 @@ export default function JavaPage() {
                 {planBusy ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
                 算怎么启动
               </button>
+              <button
+                className="btn btn-primary !py-1 !px-3 !text-[12px]"
+                disabled={startBusy || !instId}
+                onClick={runLaunch}
+              >
+                {startBusy ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                启动游戏
+              </button>
             </div>
           </div>
           <p className="text-[12px] text-ccl-muted leading-relaxed mb-3">
@@ -459,6 +490,32 @@ export default function JavaPage() {
           {planErr && (
             <div className="flex items-start gap-2 text-[12px] text-ccl-danger">
               <X size={13} className="mt-0.5 shrink-0" /> {planErr}
+            </div>
+          )}
+
+          {startErr && (
+            <div className="flex items-start gap-2 text-[12px] text-ccl-danger">
+              <X size={13} className="mt-0.5 shrink-0" /> {startErr}
+            </div>
+          )}
+
+          {started && (
+            <div className="space-y-2 mb-3">
+              <div className="text-[12px] leading-relaxed rounded-md px-3 py-2 border border-ccl-accent2/40 bg-ccl-accent2/5 text-ccl-accent2">
+                {started.verdict}
+              </div>
+              <div className="text-[11.5px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 space-y-1">
+                <Line label="版本" value={started.version_id} mono />
+                <Line label="JRE" value={started.java_home} mono />
+                <Line label="Surface" value={`${started.surface_info}（已置顶）`} mono />
+                <Line label="classpath" value={`${started.classpath_entries} 条`} />
+                {!started.vm_ok && <Line label="JVM" value={started.vm_error} />}
+              </div>
+              <p className="text-[11px] text-ccl-muted leading-relaxed">
+                游戏跑在后台线程里，命令返回只代表「已发起」。画面已经盖到最上层；
+                进度与堆栈看游戏目录下的 <code>logs/latest.log</code>、
+                <code>logs/ccl-jvm-out.log</code>。想回到启动器界面需要重启 App。
+              </p>
             </div>
           )}
 

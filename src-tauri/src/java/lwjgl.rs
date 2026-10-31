@@ -111,7 +111,7 @@ const SHIM_ASSET: &str = "lwjgl/shim.jar";
 /// 只按「文件在不在」判断复用会在换资源后踩坑：新打的 jar 没被释放，
 /// 设备上跑的还是上一版（我们就是这样被上一版 shim 坑过一次）。
 /// 改动 assets 里的任何文件时**把这个数字加一**，标记对不上就整体重解。
-const BUNDLE_REV: u32 = 6;
+const BUNDLE_REV: u32 = 7;
 
 #[cfg(target_os = "android")]
 pub fn ensure(app: &AppHandle) -> Result<LwjglFiles, String> {

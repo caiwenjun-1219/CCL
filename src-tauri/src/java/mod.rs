@@ -148,3 +148,25 @@ pub async fn android_launch_plan(instance_id: String) -> Result<serde_json::Valu
     let _ = instance_id;
     Err("Android 启动计划只在 Android 上有意义；桌面走正常的启动流程".into())
 }
+
+/// 真正启动游戏（M4-b-2）：算计划 → 接 Surface → 建 VM → 跑主类。
+///
+/// 游戏本身跑在独立线程里，这个命令返回时**只是「已发起」**，
+/// 后续输出看 `<gameDir>/logs/latest.log`。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn android_launch_game(
+    app: AppHandle,
+    instance_id: String,
+) -> Result<launch::StartReport, String> {
+    tokio::task::spawn_blocking(move || launch::start(&app, &instance_id))
+        .await
+        .map_err(|e| format!("启动线程异常: {e}"))?
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+pub async fn android_launch_game(instance_id: String) -> Result<serde_json::Value, String> {
+    let _ = instance_id;
+    Err("Android 内嵌启动只在 Android 上有意义".into())
+}

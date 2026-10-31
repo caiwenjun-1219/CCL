@@ -47,6 +47,7 @@ pub fn run() {
             java::java_embedded_test,
             java::java_lwjgl_probe,
             java::android_launch_plan,
+            java::android_launch_game,
             // Minecraft 版本
             minecraft::mc_version_manifest,
             minecraft::mc_local_versions,
@@ -130,16 +131,41 @@ pub fn run() {
             let s = settings::load(app.handle());
             proxy::set_proxy(&s.proxy);
 
-            // 联调入口：数据目录下存在 `auto-probe` 文件时，启动 6 秒后自动跑一遍
-            // 内嵌 JVM / LWJGL / 首帧探针并打到 logcat。
+            // 联调入口：数据目录下的开关文件决定启动几秒后自动跑什么，结果打到 logcat。
             //
             // 为什么不用按钮：MuMu 多 display 下 uiautomator 抓不到应用层，点不准。
-            // 生产环境不会有这个文件，等于零成本；要在设备上验证就
-            //   adb shell run-as com.caiwenjun.ccl touch CCL/auto-probe
+            // 生产环境不会有这些文件，等于零成本。
             #[cfg(target_os = "android")]
             {
                 let data = settings::data_dir(app.handle());
-                if data.join("auto-probe").exists() {
+                // 三个联调开关**互斥**：内嵌 JVM 一个进程只能建一次，探针会用
+                // 「三个 jar」的 classpath 把 VM 占住，真启动就再也没机会了。
+                // 所以做成 else-if 链，auto-launch 优先级最高。
+                //
+                // 生产环境这三个文件都不存在，等于零成本。要用就：
+                //   adb shell run-as com.caiwenjun.ccl touch CCL/auto-launch
+                if data.join("auto-launch").exists() {
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        let all = crate::instances::load_instances(&h);
+                        let Some(inst) = all.first() else {
+                            println!("[launch] 没有实例，跳过");
+                            return;
+                        };
+                        println!("[launch] 试启动实例 {}（{}）", inst.name, inst.id);
+                        match java::launch::start(&h, &inst.id) {
+                            Ok(r) => {
+                                println!("[launch] {}", r.verdict);
+                                println!(
+                                    "[launch] java_home={} vm_ok={} vm_err={} surface={}",
+                                    r.java_home, r.vm_ok, r.vm_error, r.surface_info
+                                );
+                            }
+                            Err(e) => println!("[launch] ERR {e}"),
+                        }
+                    });
+                } else if data.join("auto-probe").exists() {
                     let h = app.handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_secs(6));
@@ -152,7 +178,10 @@ pub fn run() {
                                     r.dir, r.abi, r.native_count, r.prepare_ms, r.prepared_cached
                                 );
                                 println!("[probe] vm_ok={} vm_err={}", r.vm_ok, r.vm_error);
-                                println!("[probe] surface_ok={} info={}", r.surface_ok, r.surface_info);
+                                println!(
+                                    "[probe] surface_ok={} info={}",
+                                    r.surface_ok, r.surface_info
+                                );
                                 println!("[probe] cp={}", r.classpath);
                                 for line in r.probe.lines() {
                                     println!("[probe] probe {line}");
@@ -161,12 +190,7 @@ pub fn run() {
                             Err(e) => println!("[probe] ERR {e}"),
                         }
                     });
-                }
-
-                // 另一个联调入口：`auto-plan` 存在时算一次 M4-b 启动计划。
-                // 用来在设备上肉眼核对 classpath 顺序，不需要点 UI。
-                //   adb shell run-as com.caiwenjun.ccl touch CCL/auto-plan
-                if data.join("auto-plan").exists() {
+                } else if data.join("auto-plan").exists() {
                     let h = app.handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_secs(3));

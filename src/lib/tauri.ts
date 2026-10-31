@@ -219,6 +219,24 @@ export interface LaunchPlan {
   vm_ready: boolean;
 }
 
+/**
+ * Android 真正启动游戏（M4-b-2）的结果。
+ *
+ * 注意 `verdict` 里的「已发起」：游戏跑在独立的普通线程里，命令返回时主类
+ * 只是刚被调起，真正的进度要看 `<game_dir>/logs/latest.log`。
+ */
+export interface StartReport {
+  version_id: string;
+  main_class: string;
+  java_home: string;
+  vm_ok: boolean;
+  vm_error: string;
+  surface_ok: boolean;
+  surface_info: string;
+  classpath_entries: number;
+  verdict: string;
+}
+
 export interface Account {
   uuid: string;
   name: string;
@@ -363,6 +381,9 @@ export const api = {
   /** Android 启动计划：算 classpath 顺序 / JVM 参数 / 游戏参数（不启动） */
   androidLaunchPlan: (instanceId: string) =>
     invoke<LaunchPlan>("android_launch_plan", { instanceId }),
+  /** Android 真正启动游戏：接 Surface → 建 VM → 在后台线程跑主类 */
+  androidLaunchGame: (instanceId: string) =>
+    invoke<StartReport>("android_launch_game", { instanceId }),
   // Android 存储权限（MANAGE_EXTERNAL_STORAGE）：检测与申请
   checkStoragePermission: () =>
     invoke<{ granted: boolean }>("plugin:ccl-android|check_storage_permission"),

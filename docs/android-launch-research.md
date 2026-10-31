@@ -642,14 +642,172 @@ plan() 算 classpath  →  用这份 classpath 建 VM  →  在里面跑 mainCla
 从 Pojav 的完整包里补这个 so，或者在 plan 里把 jemalloc 也剔掉
 （前提是先确认 MC 真的不调 `JEmalloc`）。
 
+## M4-b-2 —— 真启动：在 App 进程里跑 MC（2026-10-31）
+
+`java::launch::start()` 把 M1/M2/M3 的零件串成一条链：
+**算计划 → 切工作目录 → 桥 Surface → 建 VM → 后台线程跑主类**。
+
+### 6.1 顺序不能换
+
+```
+plan()                 算出 classpath（VM 只能按它建一次）
+  ↓
+set_current_dir(gameDir)  log4j 的相对路径要靠它
+  ↓
+surface::set_overlay(true) 把画面置顶（M4-a 演示完会收回下层）
+  ↓
+surface::attach()      ART 先 dlopen libpojavexec，占住 dalvikJavaVMPtr
+  ↓
+ensure_vm_for_launch() 用 plan 的 classpath 建 VM
+  ↓
+新线程 → invoke_main()  MC 的 main 会一直跑到游戏退出，不能占 tokio 线程
+```
+
+`surface::attach` 必须在建 VM **之前**：`libpojavexec` 的 `JNI_OnLoad` 按
+「谁先加载」分流，ART 先加载才会被记成 `dalvikJavaVMPtr`，内嵌 JVM 加载时才
+被记成 `runtimeJavaVMPtr` —— 反了就等着 `pojavInit` 拿错 VM 崩。
+
+### 6.2 三个必须解决的坑
+
+**① `FindClass` 在原生线程上找不到游戏类。**
+`invoke_main` 跑在 `std::thread::spawn` 出来的线程上，先用 `AttachCurrentThread`
+挂进 JVM。此时 `env.find_class("net/minecraft/client/main/Main")` 报的是含糊的
+`Java exception was thrown` —— 因为 JNI 规范说的「无 Java 帧时用 system class
+loader」，实际落在 **bootstrap loader** 上，`-Djava.class.path` 里的类一个都找不到。
+解法是显式走：
+
+```java
+ClassLoader.getSystemClassLoader().loadClass(name)
+```
+
+**② 内嵌 JVM 的 fd 1/2 在 Android 上是黑洞。**
+`System.out`、`printStackTrace`、`exception_describe` 全部写进虚空（logcat 里
+一行都没有）。所以 classpath 里塞了一个 `ccl.Boot`，开机第一件事就是
+`System.setOut/setErr(new PrintStream(文件))`，把 JVM 的输出接到
+`<gameDir>/logs/ccl-jvm-out.log`。这个类**任何异常都不许往外抛** ——
+日志是排查手段，不能变成启动的前置条件。
+
+同理，`describe_exception()` 不能用 `env.exception_describe()`，改成 JNI 反射
+取 `toString()` + `getStackTrace()` 前 8 帧，由 Rust `println!` 打到 logcat。
+
+**③ MC 的 `latest.log` 一直不生成。**
+log4j 的配置里是相对路径 `logs/latest.log`，而 App 进程的 cwd 是 `/`，于是它
+去建 `/logs` → `IOException: Could not create directory /logs` → **整个日志系统
+静默失效**（不报错、不打日志、什么都没有）。`set_current_dir(game_dir)` 之后
+立刻正常产出。这是本次最隐蔽的一个坑：现象是「游戏像卡死了」，实际是日志系统
+根本没说一句话。
+
+### 6.3 实测：MC 真的跑起来了
+
+MuMu（Android 15 / x86_64 / MC 1.21.1 完整安装）：
+
+```
+[launch] cwd=/data/user/0/com.caiwenjun.ccl/.minecraft/versions/1.21.1
+[launch] JRE=.../CCL/java/jre21-x86_64/bin/java（要求 Java 21），classpath 44 条
+[launch] surface ok=true 1440x2560 err=
+[launch] VM ok，java.home=.../CCL/java/jre21-x86_64
+[launch] JVM 输出已重定向到 .../logs/ccl-jvm-out.log
+[launch] 主线程启动：net.minecraft.client.main.Main（22 个参数）
+[launch] 调用 net.minecraft.client.main.Main.main(...)
+```
+
+MC 自己的 `logs/latest.log` 产出 195 行，关键进度：
+
+```
+[Render thread/INFO]: Setting user: Steve
+[Render thread/INFO]: Backend library: LWJGL version 3.3.3-snapshot   ← fork jar 生效
+[Render thread/INFO]: Reloading ResourceManager: vanilla
+[Render thread/INFO]: OpenAL initialized on device OpenSL
+[Render thread/INFO]: Sound engine started
+[Render thread/INFO]: Created: 1024x512x4 minecraft:textures/atlas/blocks.png-atlas
+...（blocks / particles / paintings / mob_effects / map_decorations / gui 全部建出来）
+```
+
+`Backend library: LWJGL version 3.3.3-snapshot` 这行是移植层的验收点：
+官方 LWJGL 会打印 3.3.x release 版本号，只有 fork 版才带 `-snapshot`。
+
+### 6.4 卡点：MuMu 上两种崩溃（一种已解决，一种未解决）
+
+同一份 APK、同一个实例，连续几次运行的结局不一样：
+
+| 崩溃 | 位置 | 何时 |
+| --- | --- | --- |
+| SIGILL `ILL_ILLOPN` | `<anonymous:...>`（HotSpot 的手写汇编桩区），`JVM_handle_linux_signal` | 0.4～0.7 秒，MC 刚进 main |
+| SIGSEGV `SEGV_MAPERR` @ `0x90` | `memmove ← IOBufferedStream::writeFully ← GL2Encoder::s_glTexImage2D` | 约 19 秒，纹理图集刚建完 |
+
+**第一种已经解决**：`-XX:UseAVX=0`（已写进默认 JVM 参数）。
+
+推理过程：崩溃 PC 落在**匿名可执行区**（不是任何 .so），`si_addr` 还是个内核态
+垃圾地址 `0xffffb7...`，说明 vCPU 报告的是一个「非法指令」异常，而这条指令来自
+HotSpot 自己生成的代码。`-Xint`（纯解释执行）也一样崩 —— 所以不是 JIT 编出来的，
+而是 **HotSpot 启动时按 CPUID 选手写汇编桩**（CRC32 / arraycopy / 字符串比较都有
+AVX-512 版本）。模拟器的 vCPU 声明了 AVX-512，但 hypervisor 存不住 512 位寄存器
+状态，一执行就 `#UD`。旁证：ART 自己也抱怨宿主 CPU 比它认识的都新
+（`Unexpected CPU variant for x86: x86_64 ... Known variants: ... alderlake, default`）。
+
+加上 `-XX:UseAVX=0` 后，这个崩溃连续 3 次都没再出现，且**每次都停在同一个地方**
+—— 说明它确实是独立的一个问题。
+
+**第二种是 MuMu 的 GLES 转发层**，栈很能说明问题：
+
+```
+#07 /apex/.../libc.so (memmove+1251)
+#08 pc 0000000000000004 <unknown>
+#09 /vendor/lib64/libGraphicsStream.so (IOBufferedStream::writeFully(void const*, unsigned long)+54)
+#10 /vendor/lib64/libGLESv2_enc_ext.so (GL2Encoder::s_glTexImage2D(void*, unsigned, int, int, int, int, int, unsigned, unsigned, void const*)+365)
+#11 /vendor/lib64/egl/libGLESv2_kona.so (glTexImage2D+113)
+#12 .../CCL/lwjgl/libltw.so (glTexImage2D+274)
+#13 .../liblwjgl_opengl.so (Java_..._nglTexImage2D__IIIIIIIIJ+63)
+```
+
+LTW 只是把调用转给系统 `libGLESv2`，真正干活的是 MuMu 的 **GLES 编码器**
+（`libGLESv2_enc_ext` 把命令编码进 `libGraphicsStream` 送给宿主渲染进程），
+它在 `memmove` 里读/写到了 `0x90` —— 而 `0x90` 正是「空指针 + 偏移」的形状，
+说明 `s_glTexImage2D` 传下来的像素指针（或流缓冲指针）是坏的。
+
+**关键是它完全可复现**：两次运行都是 `161` 行 `latest.log`、都停在
+`gui.png-atlas` 之后那条 shader 警告、都在约 19 秒。所以更像「某个特定尺寸/格式的
+`glTexImage2D` 打穿了编码器的缓冲区」，而不是随机踩内存。这也解释了为什么
+M4-a 的探针（只画几个彩色三角形、上传很小的纹理）从来没崩过。
+
+排除过的变量：
+
+- **渲染后端**：`renderer_mode` 从 `dx` 换成 `vk` 一样崩
+- **CDS**：`-Xshare:off` 无变化
+- **不是 C2 的问题**：默认就带着 `-XX:TieredStopAtLevel=1`（只到 C1）
+
+### 6.5 下一步：真机 or 缩小纹理上传
+
+按代价排序：
+
+1. **真机验证**（最高优先）：真机若同样崩在这个 `s_glTexImage2D`，才值得往
+   LTW / 我们的 GL 桥查；真机不崩，就是模拟器缺陷，M4-b-2 可以收尾
+2. **写一个最小 GL 探针**：只做「建纹理 → 用数据指针一次性 `glTexImage2D`
+   大纹理 → swap」三件事，二分出到底是「尺寸超了」还是「立方体贴图目标」的问题。
+   这是唯一能把「MuMu 缺陷」钉死的实验，不用真机
+3. **绕开标题界面**：`--quickPlaySingleplayer <存档>` 可以直接进世界，不渲染
+   全景立方体贴图。但设备上还没有存档，得先能进游戏建一个 —— 先有鸡还是先有蛋
+
+### 6.6 交互与退出的现状
+
+- 启动前 `set_overlay(true)`（`setZOrderOnTop` 走 UI 线程 post，所以等 400 ms
+  再 attach，避免拿到一块马上要被重建的 `ANativeWindow`）
+- SurfaceView 置顶后吃掉了触摸，WebView 点不到 —— 输入桥（M4-b-3）之前，
+  **想回启动器只能重启 App**
+- 状态栏/导航栏没有隐藏，是下一步的事
+
 ## 调试开关
 
 | 开关                    | 位置                                              | 用途                               |
 | --------------------- | ----------------------------------------------- | -------------------------------- |
-| `<data>/jvm-opts.txt` | `<data>` = `/data/user/0/com.caiwenjun.ccl/CCL` | 一行一个 JVM 选项追加到默认值后（模拟器加 `-Xint`） |
+| `<data>/jvm-opts.txt` | `<data>` = `/data/user/0/com.caiwenjun.ccl/CCL/java`（和 `jre*` 同级） | 一行一个 JVM 选项追加到默认值后（模拟器加 `-Xint`） |
+| `<data>/auto-launch`  | `/data/user/0/com.caiwenjun.ccl/CCL`（空文件即可）       | 启动 5 秒后自动用第一个实例跑 `launch::start`（M4-b-2） |
 | `<data>/auto-probe`   | 同上（空文件即可）                                       | 启动 6 秒后自动跑一遍 JVM/LWJGL/首帧探针并打 logcat |
 | `<data>/auto-plan`    | 同上                                              | 启动 3 秒后算一次 M4-b 启动计划并打 logcat（M4-b-1） |
 | Intent `ccl_overlay`  | 启动参数                                            | `--ez ccl_overlay true` 让 SurfaceView 盖住 WebView（M4-a） |
+
+三个 `auto-*` 开关**互斥**（`else if` 链）：内嵌 JVM 一个进程只能建一次，
+探针会用「三个 jar」的 classpath 把 VM 占住，真启动就再也没机会了。
 
 用 adb 操作：
 
@@ -663,8 +821,19 @@ adb shell am start -n com.caiwenjun.ccl/.MainActivity --ez ccl_overlay true
 
 # 算一次 M4-b 启动计划（看 classpath 顺序对不对）
 adb shell run-as com.caiwenjun.ccl touch CCL/auto-plan
-adb logcat -s RustStdoutStderr | grep '\[plan\]'
+
+# 真的启动 MC（注意先清掉 auto-probe/auto-plan）
+adb shell run-as com.caiwenjun.ccl touch CCL/auto-launch
+adb logcat -s RustStdoutStderr | grep '\[launch\]'
 ```
+
+`jvm-opts.txt` 那个 `cp` 从 `/data/local/tmp` 走**会静默失败**（app uid 进不去
+shell 的 0711 目录），用管道最稳：
+
+```bash
+adb shell "run-as com.caiwenjun.ccl sh -c 'cat > CCL/java/jvm-opts.txt'" < jvm-opts.txt
+```
+
 
 ## 构建（Windows 下绕开符号链接限制）
 

@@ -294,9 +294,19 @@ mod imp {
             format!("-Dorg.lwjgl.librarypath={}", cfg.lwjgl_path),
             format!("-Djava.io.tmpdir={}", jre_home.join("..").display()),
             "-Xmx512m".to_string(),
-            // 只到 C1：模拟器上 C2 会编出 CPU 不支持的指令（Fatal signal 4）。
-            // M1/M2 只需要跑小探针，用不着 C2；真正启动 MC 时再评估。
+            // 只到 C1：C2 在这类环境里编出来的代码更容易踩 CPU/hypervisor 的坑。
+            // 想放开不用改代码 —— `jvm-opts.txt` 里的选项排在默认值之后，
+            // 写一行 `-XX:TieredStopAtLevel=4` 就能覆盖（重复的 -XX 后者生效）。
             "-XX:TieredStopAtLevel=1".to_string(),
+            // 关掉 AVX：HotSpot 的**手写汇编桩**（CRC32、arraycopy、字符串比较）
+            // 会按 CPUID 自动选 AVX-512 版本，而模拟器的 vCPU 常常「声明了但存不住
+            // 512 位寄存器状态」，一执行就 #UD（SIGILL，`si_addr` 还是垃圾值，
+            // 栈上看不出任何库名，只有 `<anonymous>`）。
+            //
+            // 实测：MuMu 上不加这个，MC 会在启动 0.5 秒左右随机 SIGILL；加上之后
+            // 该崩溃消失（换成另一个 MuMu GLES 编码器的问题，见 docs）。
+            // aarch64 上 HotSpot 不认这个开关，会被 `ignoreUnrecognized` 忽略。
+            "-XX:UseAVX=0".to_string(),
         ];
         opt_strings.extend(cfg.extra_opts.iter().cloned());
 
@@ -479,15 +489,33 @@ pub fn vm_alive_for_launch(classpath: &str) -> bool {
 /// `lwjgl-glfw-3.3.3.jar` 会先被找到，Android 上根本跑不起来。
 #[cfg(target_os = "android")]
 pub fn build_config(app: &AppHandle, jre_home: PathBuf) -> Result<VmConfig, String> {
+    build_config_with(app, jre_home, None, None)
+}
+
+/// 同 [`build_config`]，但允许注入完整 classpath。
+///
+/// 真启动 MC 时必须走这条：classpath 由 [`crate::java::launch::plan`] 算出来，
+/// 里面有版本 jar 与全套 libraries。传 `None` 走探针那套「三个 jar」。
+///
+/// **顺序不能乱**：`-Djava.class.path` 只在建 VM 这一刻生效，之后改不了。
+#[cfg(target_os = "android")]
+pub fn build_config_with(
+    app: &AppHandle,
+    jre_home: PathBuf,
+    launch_classpath: Option<String>,
+    launch_opts: Option<Vec<String>>,
+) -> Result<VmConfig, String> {
     let lw = crate::java::lwjgl::ensure(app)?;
     // 顺序有语义：shim 的 CallbackBridge 必须压过 fat jar 里那份 v2 实现，
     // 否则 libpojavexec 的 JNI_OnLoad 找不到 v3 回调，直接 NoSuchMethodError。
-    let classpath = [
-        lw.shim_jar.to_string_lossy().to_string(),
-        lw.probe_jar.to_string_lossy().to_string(),
-        lw.classes_jar.to_string_lossy().to_string(),
-    ]
-    .join(":");
+    let classpath = launch_classpath.unwrap_or_else(|| {
+        [
+            lw.shim_jar.to_string_lossy().to_string(),
+            lw.probe_jar.to_string_lossy().to_string(),
+            lw.classes_jar.to_string_lossy().to_string(),
+        ]
+        .join(":")
+    });
     let lwjgl_path = lw.dir.to_string_lossy().to_string();
     // 顺序有讲究：JRE 自己的 lib 必须在内，libnio/libnet/libzip 这些都在那儿；
     // 我们的 natives 放最后，避免同名库盖掉 JRE 的。
@@ -505,7 +533,8 @@ pub fn build_config(app: &AppHandle, jre_home: PathBuf) -> Result<VmConfig, Stri
         // MC 1.17+ 要 GL 3.2，Android 上唯一能提供的是 LTW（GLES→GL 翻译层）。
         // LWJGL 会在 createCapabilities 时按这个名字去 loadNative，必须提前定死；
         // 探针里也设了一遍，但真实启动走的是这里。
-        extra_opts: vec!["-Dorg.lwjgl.opengl.libname=libltw.so".to_string()],
+        extra_opts: launch_opts
+            .unwrap_or_else(|| vec!["-Dorg.lwjgl.opengl.libname=libltw.so".to_string()]),
     })
 }
 
@@ -517,6 +546,26 @@ pub fn ensure_vm_for(
     jre_home: PathBuf,
 ) -> (Option<&'static jni::JavaVM>, EmbeddedReport) {
     match build_config(app, jre_home) {
+        Ok(cfg) => ensure_vm(cfg),
+        Err(e) => {
+            let mut r = EmbeddedReport::default();
+            r.verdict = e;
+            (None, r)
+        }
+    }
+}
+
+/// 按「启动计划」的 classpath 建 VM。`launch_classpath` 来自
+/// [`crate::java::launch::plan`]，必须与 VM 已经建成的 classpath 一致，
+/// 否则这里返回的 `vm` 是 `None`（VM 只能建一次）。
+#[cfg(target_os = "android")]
+pub fn ensure_vm_for_launch(
+    app: &AppHandle,
+    jre_home: PathBuf,
+    launch_classpath: String,
+    launch_opts: Vec<String>,
+) -> (Option<&'static jni::JavaVM>, EmbeddedReport) {
+    match build_config_with(app, jre_home, Some(launch_classpath), Some(launch_opts)) {
         Ok(cfg) => ensure_vm(cfg),
         Err(e) => {
             let mut r = EmbeddedReport::default();
