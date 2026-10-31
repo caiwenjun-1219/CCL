@@ -82,6 +82,15 @@ object GameSurface {
     private var overlay = false
 
     /**
+     * 触摸监听。置顶时挂到 SurfaceView 上，收起时**摘掉**。
+     *
+     * 必须有单独的引用：`View.dispatchTouchEvent` 是先问 OnTouchListener、
+     * 再走 `onTouchEvent`，跟 clickable 无关。只把 isClickable 设成 false
+     * 并不会让监听器失效，事件照样被吞，WebView 收不到。
+     */
+    private val touchListener = View.OnTouchListener { v, ev -> handleTouch(v, ev) }
+
+    /**
      * 在 `MainActivity.onCreate` 里调用（必须在 super.onCreate 之后）
      *
      * @param overlay true = surface 盖在 WebView 之上（游戏画面全屏）；false = 压在内容下层
@@ -105,10 +114,12 @@ object GameSurface {
 
         // M4-b-3：SurfaceView 默认**不吃触摸**（不可点击），置顶后事件会直接
         // 穿透到下面的 WebView，游戏收不到任何输入。必须显式打开。
+        // 注意：光靠这里不够 —— 还要在 setOverlay(true) 里 bringToFront，
+        // 否则 View 树顺序仍然让 WebView 先拿到 DOWN。
         view.isClickable = true
         view.isFocusable = true
         view.isFocusableInTouchMode = true
-        view.setOnTouchListener { v, ev -> handleTouch(v, ev) }
+        view.setOnTouchListener(touchListener)
 
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
@@ -299,7 +310,34 @@ object GameSurface {
             overlay = onTop
             v.setZOrderMediaOverlay(false)
             v.setZOrderOnTop(onTop)
-            Log.i(TAG, "setOverlay($onTop)")
+
+            // ---- 触摸顺序：跟 Surface 图层是**两件事**（M4-b-3 真机实测）
+            //
+            // setZOrderOnTop 只改 SurfaceFlinger 的图层，改了之后游戏画面确实
+            // 盖住了 WebView，但**手指事件仍然被 WebView 吃掉**：
+            // `ViewGroup.dispatchTouchEvent` 是按子视图数组**倒序**分发的，
+            // 而我们是 `addView(view, 0)` 挂在 index 0（最底下），WebView 的
+            // content 层排在它后面，永远先拿到 DOWN。
+            //
+            // 用 `bringToFront()` 而不是「removeView 再 addView」：
+            // 后者会走 detach/attach，SurfaceView 的 Surface 会被销毁重建，
+            // 已经桥接给 libpojavexec 的 ANativeWindow 立刻变成野指针
+            // （这正是本文件反复强调的那个坑）。bringToFront 内部只重排
+            // mChildren 数组（removeFromArray + addInArray），不触发
+            // onDetachedFromWindow，Surface 原样保留。
+            if (onTop) {
+                v.bringToFront()
+                // 置顶要接管触摸：显式打开可点击 + 挂回监听
+                v.isClickable = true
+                v.setOnTouchListener(touchListener)
+            } else {
+                // 收起时把 UI 还给用户：**必须清掉 OnTouchListener**。
+                // View.dispatchTouchEvent 会先问 OnTouchListener（在 clickable
+                // 判断之前），只要它还返回 true，WebView 永远拿不到事件。
+                v.isClickable = false
+                v.setOnTouchListener(null)
+            }
+            Log.i(TAG, "setOverlay($onTop) childIndex=${(v.parent as? ViewGroup)?.indexOfChild(v)}/${(v.parent as? ViewGroup)?.childCount}")
         }
     }
 

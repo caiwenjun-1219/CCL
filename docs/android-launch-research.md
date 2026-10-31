@@ -1100,7 +1100,49 @@ GL 这一段」引入。下一步二分方向（还没做）：
 探针 10 秒能复现的问题，用 MC 要等 40 秒解包 + 建 VM。反过来，探针日志很短，
 容易被系统日志刷掉（Play 服务一秒钟能刷几千行），关键结论要**当场 grep 存文件**。
 
-### 7.7 还没做的
+### 7.7 触摸链路在真机上通了（2026-10-31 夜）
+
+**症状**：`auto-touch` 模式下，Surface 置顶成功（`prepareGameSurface -> OK|原地
+gen=1 1080x2400`）、进程稳定、窗口有焦点（display 0 上
+`mCurrentFocus=Window{... MainActivity}`），但注入 `input tap` 后
+`CCLInput` 一条都没有。
+
+**根因：`setZOrderOnTop` 只改 SurfaceFlinger 的图层，跟触摸分发完全无关。**
+
+触摸分发的顺序由 `ViewGroup.dispatchTouchEvent` 决定 —— 它**倒序**遍历子视图
+（index 大的先），而 `attach(overlay=false)` 时我们是 `addView(view, 0)` 挂在
+DecorView 的 index 0，WebView 的 content 层排在后面，永远先拿到 DOWN 并消费掉。
+
+**修复**：`setOverlay(true)` 里同时 `v.bringToFront()`。
+
+- **不能用「removeView 再 addView」**：那会走 detach/attach，SurfaceView 的
+  Surface 被销毁重建，已经桥接给 `libpojavexec` 的 `ANativeWindow` 立刻变野指针
+  （本文件 §5 反复强调的坑）。
+- `View.bringToFront()` 内部只重排 `mChildren` 数组
+  （`removeFromArray` + `addInArray`），**不触发** `onDetachedFromWindow`，
+  Surface 原样保留。实测日志：`setOverlay(true) childIndex=2/3`，`gen` 仍是 1。
+- 收起时必须 **`setOnTouchListener(null)`**，只把 `isClickable` 设 false 不够：
+  `View.dispatchTouchEvent` 会**先问 OnTouchListener**（在 clickable 判断之前），
+  监听器还返回 true 就一直吞事件，WebView 永远收不到。
+
+**验证结果（vivo V2313A）**：
+
+| 环节 | 证据 |
+| --- | --- |
+| 手指 → View | `CCLInput: ACTION_DOWN @300.0,900.0 grabbed=false` |
+| View → ART 侧 CallbackBridge | 同一 dex 类，探针自检 `CursorPos` 到达 GLFW（`600,700`） |
+| CallbackBridge → GLFW native | 探针自检 `cursor=ok lbtn=ok rbtn=ok scroll=ok key=ok` |
+
+注意 `auto-touch` 模式不加载 `libpojavexec`，所以日志里那串
+`UnsatisfiedLinkError: nativeSendCursorPos` 是**预期的**，不是 bug —— 它恰好
+再次证明了 §7.1 的结论：native 只有 pojavexec 在 ART 侧 `JNI_OnLoad` 注册过才存在。
+
+**调试陷阱（又踩一次）**：`dumpsys window | grep mCurrentFocus` 在 vivo 上会先
+命中 **display 3**（ROM 自带的虚拟 display），显示 `null`，看起来像「没有窗口
+有焦点」。必须用 `dumpsys window displays` 按 display 分别看，或者直接看
+`dumpsys input` 的 `FocusedWindows`。这一条曾让 M4-b-3 卡了整整一轮。
+
+### 7.8 还没做的
 
 - 虚拟按键（跳跃/潜行/打开背包）——现在只能靠手势摸到「移动 + 左右键 + 滚轮」
 - 键盘输入（聊天、命令）：`nativeSendChar` 已在类里声明，缺一个输入法桥
