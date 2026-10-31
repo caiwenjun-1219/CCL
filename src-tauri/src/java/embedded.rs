@@ -447,6 +447,31 @@ pub fn ensure_vm(cfg: VmConfig) -> (Option<&'static jni::JavaVM>, EmbeddedReport
     (vm, report)
 }
 
+/// 用这份 classpath 还能不能建 VM。
+///
+/// - VM 没建过 → `true`，随时可建
+/// - VM 已建、classpath 一致 → `true`，可以直接用
+/// - VM 已建、classpath 不同 → `false`，游戏类永远加载不到（classpath 在建 VM
+///   那一刻就定死了），只能重启进程
+///
+/// 这是 M4-b 的硬约束：探针（M2/M3）一旦跑过，VM 就用「三 jar」的 classpath
+/// 建好了。之后想真启动 MC，必须走「先 [`crate::java::launch::plan`]、再建 VM」
+/// 的顺序，中间不能插探针。
+pub fn vm_alive_for_launch(classpath: &str) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        match imp::cached_report() {
+            None => true,
+            Some(r) => r.vm_ok && r.classpath == classpath,
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = classpath;
+        false
+    }
+}
+
 /// 把当前 JRE 与 LWJGL 路径拼成一份 VM 配置。
 ///
 /// 所有需要 JVM 的命令都应该经这里，保证 classpath 顺序一致：

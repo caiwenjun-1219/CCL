@@ -23,6 +23,10 @@ pub mod lwjgl;
 /// Surface 桥接（M3）：把 ART 的 `android.view.Surface` 变成
 /// `libpojavexec` 能用的 `ANativeWindow*`，`glfwInit` 的前置条件。
 pub mod surface;
+/// Android 启动编排（M4-b）：算出 classpath / JVM 参数 / 游戏参数。
+/// 桌面走 `launcher.rs` 的 spawn 子进程，Android 只能在内嵌 JVM 里跑 main。
+#[cfg(target_os = "android")]
+pub mod launch;
 
 #[cfg(not(target_os = "android"))]
 pub mod desktop;
@@ -119,4 +123,28 @@ pub async fn java_embedded_test(app: AppHandle) -> Result<embedded::EmbeddedRepo
 #[tauri::command]
 pub async fn java_lwjgl_probe(app: AppHandle) -> Result<lwjgl::LwjglReport, String> {
     lwjgl::run(app).await
+}
+
+/// Android 启动计划（M4-b）：只算「该怎么启动」，不启动。
+///
+/// 返回 classpath 的**逐条顺序**、JVM 参数、游戏参数，以及生成过程中的取舍。
+/// 排查「为什么还是加载到桌面版 lwjgl」时，先看这里。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn android_launch_plan(
+    app: AppHandle,
+    instance_id: String,
+) -> Result<launch::LaunchPlan, String> {
+    tokio::task::spawn_blocking(move || launch::plan(&app, &instance_id))
+        .await
+        .map_err(|e| format!("计划线程异常: {e}"))?
+}
+
+/// 桌面端的同名占位，让前端的 `invoke` 拿到一条人能看懂的错，而不是
+/// 「command not found」。
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+pub async fn android_launch_plan(instance_id: String) -> Result<serde_json::Value, String> {
+    let _ = instance_id;
+    Err("Android 启动计划只在 Android 上有意义；桌面走正常的启动流程".into())
 }

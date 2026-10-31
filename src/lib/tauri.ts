@@ -194,6 +194,31 @@ export interface LwjglReport {
   verdict: string;
 }
 
+/**
+ * Android 启动计划（M4-b）。
+ *
+ * 只描述「该怎么启动」，不启动。重点是 `entries` 的**顺序**：
+ * fork 版 LWJGL 必须排在最前，官方 `org.lwjgl:*` 已被整体移出 classpath。
+ */
+export interface LaunchPlan {
+  instance_id: string;
+  version_id: string;
+  main_class: string;
+  classpath: string;
+  /** classpath 逐条，按加载顺序 */
+  entries: string[];
+  jvm_args: string[];
+  game_args: string[];
+  game_dir: string;
+  natives_dir: string;
+  assets_dir: string;
+  library_path: string;
+  /** 生成过程中的取舍说明（剔了哪些库、改了哪些参数） */
+  notes: string[];
+  /** 内嵌 JVM 是否还能用这份 classpath 建起来。false 表示要重启 App */
+  vm_ready: boolean;
+}
+
 export interface Account {
   uuid: string;
   name: string;
@@ -335,6 +360,9 @@ export const api = {
   javaEmbeddedTest: () => invoke<EmbeddedReport>("java_embedded_test"),
   /** LWJGL 移植层探针：验证 Pojav 的 natives + fork 版 GLFW 能否在内嵌 JVM 里跑起来 */
   javaLwjglProbe: () => invoke<LwjglReport>("java_lwjgl_probe"),
+  /** Android 启动计划：算 classpath 顺序 / JVM 参数 / 游戏参数（不启动） */
+  androidLaunchPlan: (instanceId: string) =>
+    invoke<LaunchPlan>("android_launch_plan", { instanceId }),
   // Android 存储权限（MANAGE_EXTERNAL_STORAGE）：检测与申请
   checkStoragePermission: () =>
     invoke<{ granted: boolean }>("plugin:ccl-android|check_storage_permission"),

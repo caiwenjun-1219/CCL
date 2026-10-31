@@ -13,6 +13,7 @@ import {
   X,
   FlaskConical,
   Boxes,
+  Play,
 } from "lucide-react";
 import { useApp } from "../store/app";
 import {
@@ -22,6 +23,8 @@ import {
   type SmokeReport,
   type EmbeddedReport,
   type LwjglReport,
+  type LaunchPlan,
+  type Instance,
 } from "../lib/tauri";
 import { isMobile } from "../lib/env";
 
@@ -54,6 +57,12 @@ export default function JavaPage() {
   const [lw, setLw] = useState<LwjglReport | null>(null);
   const [lwBusy, setLwBusy] = useState(false);
   const [lwErr, setLwErr] = useState<string | null>(null);
+  // ---- 启动计划（M4-b）
+  const [instances, setInstances] = useState<Instance[]>([]);
+  const [instId, setInstId] = useState("");
+  const [plan, setPlan] = useState<LaunchPlan | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planErr, setPlanErr] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -73,6 +82,14 @@ export default function JavaPage() {
         .checkStoragePermission()
         .then((r) => setPermGranted(r.granted))
         .catch(() => setPermGranted(true));
+      // 启动计划需要选一个实例
+      api
+        .listInstances()
+        .then((list) => {
+          setInstances(list);
+          if (list.length > 0) setInstId((cur) => cur || list[0].id);
+        })
+        .catch(() => undefined);
     }
   }, []);
 
@@ -138,6 +155,23 @@ export default function JavaPage() {
       setLwErr(String(e));
     } finally {
       setLwBusy(false);
+    }
+  };
+
+  const runPlan = async () => {
+    if (!instId) {
+      showToast("先创建一个实例", "bad");
+      return;
+    }
+    setPlanBusy(true);
+    setPlanErr(null);
+    try {
+      setPlan(await api.androidLaunchPlan(instId));
+    } catch (e) {
+      setPlan(null);
+      setPlanErr(String(e));
+    } finally {
+      setPlanBusy(false);
     }
   };
 
@@ -378,6 +412,124 @@ export default function JavaPage() {
                 <pre className="text-[11px] leading-relaxed bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap text-ccl-muted">
                   {lw.probe.trim()}
                 </pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAndroid && (
+        <div className="card mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Play size={15} className="text-ccl-muted" />
+              <h2 className="text-[13px] font-bold">启动计划（M4-b）</h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                className="field !w-36 !py-1 !text-[12px]"
+                value={instId}
+                onChange={(e) => setInstId(e.target.value)}
+                disabled={planBusy || instances.length === 0}
+              >
+                {instances.length === 0 && <option value="">没有实例</option>}
+                {instances.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="btn !py-1 !px-3 !text-[12px]"
+                disabled={planBusy || !instId}
+                onClick={runPlan}
+              >
+                {planBusy ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                算怎么启动
+              </button>
+            </div>
+          </div>
+          <p className="text-[12px] text-ccl-muted leading-relaxed mb-3">
+            桌面端起一个 java 子进程；Android 没有 Surface、也没有 JNI 桥，只能在 App
+            进程里用内嵌 JVM 跑主类。这里先把「该怎么启动」算出来 —— 关键在 classpath 的
+            <b className="text-ccl-text"> 顺序</b>：Pojav 的 fork 版 LWJGL 必须压过官方那些
+            绑着桌面 natives 的 jar，否则 <code>glfwInit</code> 会去找 <code>libglfw.so</code>。
+          </p>
+
+          {planErr && (
+            <div className="flex items-start gap-2 text-[12px] text-ccl-danger">
+              <X size={13} className="mt-0.5 shrink-0" /> {planErr}
+            </div>
+          )}
+
+          {plan && (
+            <div className="space-y-2">
+              <div
+                className={`text-[12px] leading-relaxed rounded-md px-3 py-2 border ${
+                  plan.vm_ready
+                    ? "border-ccl-accent2/40 bg-ccl-accent2/5 text-ccl-accent2"
+                    : "border-ccl-warn/40 bg-ccl-warn/5 text-ccl-warn"
+                }`}
+              >
+                {plan.vm_ready
+                  ? `计划可用：${plan.main_class}，${plan.entries.length} 个 classpath 条目`
+                  : "内嵌 JVM 已用别的 classpath 建好了，本次启动会缺游戏类 —— 重启 App 再试"}
+              </div>
+
+              <div className="text-[11.5px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 space-y-1">
+                <Line label="版本" value={plan.version_id} mono />
+                <Line label="主类" value={plan.main_class} mono />
+                <Line label="游戏目录" value={plan.game_dir} mono />
+                <Line label="natives" value={plan.library_path} mono />
+              </div>
+
+              <div className="text-[11px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2">
+                <div className="text-ccl-muted mb-1">
+                  classpath 共 {plan.entries.length} 条，按加载顺序列出前{" "}
+                  {Math.min(12, plan.entries.length)} 条
+                </div>
+                <ol className="space-y-0.5">
+                  {plan.entries.slice(0, 12).map((p, i) => (
+                    <li
+                      key={`${i}-${p}`}
+                      className={i < 2 ? "text-ccl-accent2 break-all" : "text-ccl-muted break-all"}
+                    >
+                      {i + 1}. {p}
+                      {i < 2 && <span className="ml-1 opacity-70">（移植层）</span>}
+                    </li>
+                  ))}
+                  {plan.entries.length > 12 && (
+                    <li className="text-ccl-muted opacity-70">
+                      …还有 {plan.entries.length - 12} 条
+                    </li>
+                  )}
+                </ol>
+              </div>
+
+              <details className="text-[11px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2">
+                <summary className="cursor-pointer text-ccl-muted">
+                  JVM 参数（{plan.jvm_args.length}）
+                </summary>
+                <pre className="mt-1.5 whitespace-pre-wrap break-all text-ccl-muted">
+                  {plan.jvm_args.join("\n")}
+                </pre>
+              </details>
+
+              <details className="text-[11px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2">
+                <summary className="cursor-pointer text-ccl-muted">
+                  游戏参数（{plan.game_args.length}）
+                </summary>
+                <pre className="mt-1.5 whitespace-pre-wrap break-all text-ccl-muted">
+                  {plan.game_args.join("\n")}
+                </pre>
+              </details>
+
+              {plan.notes.length > 0 && (
+                <ul className="text-[11px] text-ccl-muted space-y-1 pl-4 list-disc">
+                  {plan.notes.map((n) => (
+                    <li key={n}>{n}</li>
+                  ))}
+                </ul>
               )}
             </div>
           )}

@@ -46,6 +46,7 @@ pub fn run() {
             java::java_smoke_test,
             java::java_embedded_test,
             java::java_lwjgl_probe,
+            java::android_launch_plan,
             // Minecraft 版本
             minecraft::mc_version_manifest,
             minecraft::mc_local_versions,
@@ -158,6 +159,40 @@ pub fn run() {
                                 }
                             }
                             Err(e) => println!("[probe] ERR {e}"),
+                        }
+                    });
+                }
+
+                // 另一个联调入口：`auto-plan` 存在时算一次 M4-b 启动计划。
+                // 用来在设备上肉眼核对 classpath 顺序，不需要点 UI。
+                //   adb shell run-as com.caiwenjun.ccl touch CCL/auto-plan
+                if data.join("auto-plan").exists() {
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        let all = crate::instances::load_instances(&h);
+                        println!("[plan] 实例数={}", all.len());
+                        let Some(inst) = all.first() else {
+                            println!("[plan] 没有实例，跳过");
+                            return;
+                        };
+                        match java::launch::plan(&h, &inst.id) {
+                            Ok(p) => {
+                                println!(
+                                    "[plan] version={} main={} vm_ready={}",
+                                    p.version_id, p.main_class, p.vm_ready
+                                );
+                                println!("[plan] 条目数={}", p.entries.len());
+                                for (i, e) in p.entries.iter().enumerate().take(6) {
+                                    println!("[plan] cp[{i}]={e}");
+                                }
+                                for n in &p.notes {
+                                    println!("[plan] note={n}");
+                                }
+                                println!("[plan] jvm={}", p.jvm_args.join(" "));
+                                println!("[plan] game={}", p.game_args.join(" "));
+                            }
+                            Err(e) => println!("[plan] ERR {e}"),
                         }
                     });
                 }

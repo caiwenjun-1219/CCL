@@ -49,7 +49,26 @@ struct Arguments {
     jvm: Vec<Value>,
 }
 
-/// rules 判定（Windows x64，无自定义分辨率/演示模式）
+/// 规则判定用的 OS 名。
+///
+/// MC 的 `rules[].os.name` 只有 `windows` / `osx` / `linux` 三种取值。
+/// **Android 必须报 `linux`**（Pojav 也这么做）：报成别的会让所有带
+/// `os` 条件的条目被整体判掉 —— 包括 `natives-*` 分类器与一部分 jvm 参数。
+/// 桌面端行为不变（Windows 仍是 `windows`，顺带修了 macOS 之前误报 windows 的问题）。
+pub(crate) fn rule_os_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "osx"
+    } else {
+        "linux"
+    }
+}
+
+/// classpath 分隔符：Windows 是 `;`，其余（含 Android）是 `:`。
+pub(crate) const CLASSPATH_SEP: char = if cfg!(windows) { ';' } else { ':' };
+
+/// rules 判定（按当前平台，无自定义分辨率/演示模式）
 fn rule_allows(value: &Value) -> bool {
     match value.get("rules") {
         None => true,
@@ -61,7 +80,7 @@ fn rule_allows(value: &Value) -> bool {
                 let action = rule.get("action").and_then(|a| a.as_str()).unwrap_or("allow");
                 let os_match = rule
                     .get("os")
-                    .map(|os| os.get("name").and_then(|n| n.as_str()) == Some("windows"))
+                    .map(|os| os.get("name").and_then(|n| n.as_str()) == Some(rule_os_name()))
                     .unwrap_or(true);
                 let features_ok = rule
                     .get("features")
@@ -78,7 +97,7 @@ fn rule_allows(value: &Value) -> bool {
 }
 
 /// 从 argument 条目提取字符串列表（支持 "str" 与 {rules, value: [...]}）
-fn arg_strings(value: &Value) -> Vec<String> {
+pub(crate) fn arg_strings(value: &Value) -> Vec<String> {
     if !rule_allows(value) {
         return vec![];
     }
@@ -99,9 +118,53 @@ fn arg_strings(value: &Value) -> Vec<String> {
     }
 }
 
-/// 组装 classpath：版本 jar + 所有允许的 libraries
-fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson: &Value) -> String {
-    let mut paths: Vec<String> = vec![];
+/// fork jar 已覆盖、必须从 classpath 里移出的官方 LWJGL 模块（Maven `group:artifact`）。
+///
+/// 与 Pojav 的 `lwjgl-classes.jar` 实际内容一一对应：
+/// `opengl` / `system` / `util` / `glfw` / `openal` / `stb` / `nanovg`。
+/// 这些官方 jar 绑的是桌面 natives（`libglfw.so` / `libGL.so`），留在
+/// classpath 里迟早会有人先加载它们。
+///
+/// **刻意不在这里的两个**：`lwjgl-freetype` 与 `lwjgl-tinyfd` —— fork jar 里
+/// 没有它们的类，得继续用官方 jar；native 由我们提供的 `libfreetype.so` /
+/// `liblwjgl_tinyfd.so` 顶上（库名恰好对得上）。
+const REPLACED_LWJGL: &[&str] = &[
+    "org.lwjgl:lwjgl",
+    "org.lwjgl:lwjgl-glfw",
+    "org.lwjgl:lwjgl-opengl",
+    "org.lwjgl:lwjgl-openal",
+    "org.lwjgl:lwjgl-stb",
+    "org.lwjgl:lwjgl-nanovg",
+];
+
+/// 判断某个 Maven 坐标是否属于「被 fork 覆盖」的模块。
+///
+/// 只看 `group:artifact` 两段，`natives-linux` 之类的 classifier 不影响判断
+/// （那些本来就只含 `.so`，但一起剔掉更省心）。
+pub(crate) fn is_replaced_lwjgl(name: &str) -> bool {
+    let mut it = name.split(':');
+    match (it.next(), it.next()) {
+        (Some(g), Some(a)) => {
+            let ga = format!("{g}:{a}");
+            REPLACED_LWJGL.contains(&ga.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// 收集 classpath 条目：版本 jar + 所有允许的 libraries。
+///
+/// `skip` 收到 Maven 坐标（`group:artifact:version[:classifier]`）并返回是否跳过。
+/// Android 用它剔除官方的 `org.lwjgl:*` —— 那些 jar 里绑的是桌面 natives，
+/// 必须让位给 Pojav 的 fork 版 fat jar，否则 `glfwInit` 会去找 `libglfw.so`。
+pub(crate) fn collect_classpath_entries(
+    game_dir: &PathBuf,
+    version_id: &str,
+    mc_version: &str,
+    vjson: &Value,
+    skip: &dyn Fn(&str) -> bool,
+) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = vec![];
     // 加载器实例的原版 client jar 落在父版本目录（versions/<mc>/<mc>.jar），
     // 合并安装时不会复制到 loader 目录，但启动必须带上，否则找不到 net.minecraft.*
     if version_id != mc_version {
@@ -110,7 +173,7 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson
             .join(mc_version)
             .join(format!("{mc_version}.jar"));
         if parent_jar.exists() {
-            paths.push(parent_jar.to_string_lossy().to_string());
+            paths.push(parent_jar);
         }
     }
     let version_jar = game_dir
@@ -118,7 +181,7 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson
         .join(version_id)
         .join(format!("{version_id}.jar"));
     if version_jar.exists() {
-        paths.push(version_jar.to_string_lossy().to_string());
+        paths.push(version_jar);
     }
     if let Some(Value::Array(libs)) = vjson.get("libraries") {
         for lib in libs {
@@ -126,6 +189,9 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson
                 continue;
             }
             let name = lib.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if skip(name) {
+                continue;
+            }
             // 新格式 natives（org.lwjgl:lwjgl:3.3.3:natives-windows）只含 dll，不进 classpath
             let name_suffix = name.split(':').last().unwrap_or("");
             if name_suffix.starts_with("natives-") {
@@ -150,13 +216,29 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson
                     }
                 }
             };
-            paths.push(path.to_string_lossy().to_string());
+            paths.push(path);
         }
     }
-    // classpath 分隔符必须跟平台一致：Windows 是 ';'，Linux / Android / macOS 是 ':'。
-    // 之前写死 ';' 在桌面上没问题，但 Android 上 java 会把整串当成一个文件名，
-    // 表现为 `Could not find or load main class net.minecraft.client.main.Main`。
-    paths.join(if cfg!(windows) { ";" } else { ":" })
+    paths
+}
+
+/// 组装 classpath（桌面路径，原样全收）
+fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson: &Value) -> String {
+    join_classpath(&collect_classpath_entries(
+        game_dir, version_id, mc_version, vjson, &|_| false,
+    ))
+}
+
+/// 把条目按平台分隔符拼成 classpath 字符串。
+///
+/// 之前写死 `;` 在桌面上没问题，但 Android 上 java 会把整串当成一个文件名，
+/// 表现为 `Could not find or load main class net.minecraft.client.main.Main`。
+pub(crate) fn join_classpath(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(&CLASSPATH_SEP.to_string())
 }
 
 fn maven_path_from_name(name: &str) -> PathBuf {
@@ -173,7 +255,7 @@ fn maven_path_from_name(name: &str) -> PathBuf {
     PathBuf::from(format!("{group}/{artifact}/{version}/{file}"))
 }
 
-fn substitute(arg: &str, vars: &HashMap<String, String>) -> String {
+pub(crate) fn substitute(arg: &str, vars: &HashMap<String, String>) -> String {
     let mut out = arg.to_string();
     for (k, v) in vars {
         out = out.replace(&format!("${{{k}}}"), v);
@@ -743,4 +825,66 @@ fn make_offline_account(app: &AppHandle) -> Account {
     auth::offline_login(app.clone(), name)
         .or_else(|_| auth::offline_login(app.clone(), "Steve".to_string()))
         .expect("创建离线账户失败")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn replaced_lwjgl_matches_group_and_artifact_only() {
+        assert!(is_replaced_lwjgl("org.lwjgl:lwjgl:3.3.3"));
+        assert!(is_replaced_lwjgl("org.lwjgl:lwjgl-glfw:3.3.3:natives-linux"));
+        assert!(is_replaced_lwjgl("org.lwjgl:lwjgl-opengl:3.3.3"));
+
+        // 这两个 fork jar 里没有对应类，必须继续用官方 jar
+        assert!(!is_replaced_lwjgl("org.lwjgl:lwjgl-freetype:3.3.3"));
+        assert!(!is_replaced_lwjgl("org.lwjgl:lwjgl-tinyfd:3.3.3"));
+
+        // 前缀相近的其它坐标不能被误伤
+        assert!(!is_replaced_lwjgl("org.lwjgl.lwjgl:lwjgl:2.9.3"));
+        assert!(!is_replaced_lwjgl("com.mojang:brigadier:1.0.18"));
+        assert!(!is_replaced_lwjgl(""));
+    }
+
+    #[test]
+    fn classpath_skips_replaced_modules_but_keeps_freetype() {
+        let root = std::env::temp_dir().join(format!("ccl-cp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lib = root.join("libraries");
+        let mk = |path: &str| {
+            let p = lib.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+            p
+        };
+        let core = mk("org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar");
+        let glfw = mk("org/lwjgl/lwjgl-glfw/3.3.3/lwjgl-glfw-3.3.3.jar");
+        let freetype = mk("org/lwjgl/lwjgl-freetype/3.3.3/lwjgl-freetype-3.3.3.jar");
+        let guava = mk("com/google/guava/guava/32.1.2-jre/guava-32.1.2-jre.jar");
+
+        let vjson = json!({"libraries": [
+            {"name": "org.lwjgl:lwjgl:3.3.3"},
+            {"name": "org.lwjgl:lwjgl-glfw:3.3.3"},
+            {"name": "org.lwjgl:lwjgl-freetype:3.3.3"},
+            {"name": "com.google.guava:guava:32.1.2-jre"}
+        ]});
+
+        let all = collect_classpath_entries(&root, "1.21.11", "1.21.11", &vjson, &|_| false);
+        assert_eq!(all.len(), 4, "不做过滤时四条都应在");
+
+        let kept = collect_classpath_entries(&root, "1.21.11", "1.21.11", &vjson, &is_replaced_lwjgl);
+        assert_eq!(kept, vec![freetype, guava], "只留 freetype 与 guava");
+        assert!(!kept.contains(&core) && !kept.contains(&glfw));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn classpath_joins_with_platform_separator() {
+        let cp = join_classpath(&[PathBuf::from("/a/b.jar"), PathBuf::from("/c/d.jar")]);
+        let sep = CLASSPATH_SEP.to_string();
+        assert_eq!(cp, format!("/a/b.jar{sep}/c/d.jar"));
+    }
 }

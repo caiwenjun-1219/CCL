@@ -533,12 +533,122 @@ Display #0   内置屏幕        uniqueId=local:4619827820427265280   ← 安卓
 
 
 
+## M4-b-1 —— 启动计划的 classpath 排序（2026-10-31 完成）
+
+M4-b 是「真正把 MC 跑起来」，拆成三块：
+
+1. **classpath 排序**（本文档这一节，已完成）
+2. 用内嵌 JVM 在独立线程里跑 `mainClass`（待做）
+3. 输入桥：把 ART 的 `MotionEvent` 转给 `CallbackBridge` 的 20 个 native（待做）
+
+### 5.1 为什么不能复用 `launcher.rs`
+
+桌面是 `Command::new(java)` 起子进程。Android 上这条路**必然失败** ——
+设备上留着一份 2026-10-30 的实验日志（`.minecraft/ccl-launch.log`），
+当时就是用桌面 JRE 的子进程跑的，结论很干脆：
+
+```
+[Render thread/INFO]: [STDERR]: Caused by: java.lang.ExceptionInInitializerError:
+    Exception java.lang.UnsatisfiedLinkError: Failed to locate library: liblwjgl.so
+	at org.lwjgl.system.Library.loadSystem(Library.java:174)
+	at com.mojang.blaze3d.systems.RenderSystem.<clinit>(SourceFile:48)
+```
+
+子进程里没有 Activity 的 `Surface`，也没有 `libpojavexec` 的 JNI 桥，
+`glfwInit` 无从谈起。所以必须在 App 进程内用内嵌 JVM 调 `mainClass`。
+
+顺带这份日志还确认了两件事：
+
+- **MC 主类在 Android 上能跑到 `net.minecraft.client.main.Main.main`**
+  （oshi / JNA 只报 WARN，来自桌面 JNA 的 `libc.so.6` 找不到，不致命）
+- 官方 lwjgl 的 `Library.loadSystem` 卡在 `liblwjgl.so` 上 —— 而这正是
+  移植层**有**的那个 so（`<data>/CCL/lwjgl/liblwjgl.so`）。换成 fork jar
+  之后这条路就通了。
+
+### 5.2 排序策略：不是「排前面」，是「剔掉」
+
+`-Djava.class.path` 的顺序在不同 JVM 实现上并不保证被尊重，而我们又只有
+一次机会（见 5.3）。所以做法改成**直接把被 fork 覆盖的官方模块移出 classpath**：
+
+移出（`lwjgl-classes.jar` 里有对应类）：
+
+```
+org.lwjgl:lwjgl           org.lwjgl:lwjgl-glfw      org.lwjgl:lwjgl-opengl
+org.lwjgl:lwjgl-openal    org.lwjgl:lwjgl-stb       org.lwjgl:lwjgl-nanovg
+```
+
+保留（fork jar 里**没有**这些类，只能用官方 jar）：
+
+| 模块 | native | 我们提供的 so |
+|---|---|---|
+| `org.lwjgl:lwjgl-freetype` | `libfreetype.so` | ✅ 有 |
+| `org.lwjgl:lwjgl-tinyfd`   | `liblwjgl_tinyfd.so` | ✅ 有 |
+| `org.lwjgl:lwjgl-jemalloc` | `liblwjgl_jemalloc.so` | ❌ **没有**（见 5.5） |
+
+**这个「不能一刀切」的判断很容易做错**：`lwjgl-classes.jar` 里 `org/lwjgl`
+下只有 `opengl / system / util / glfw / openal / stb / nanovg / input` 八个子包，
+freetype 与 tinyfd 的类根本不在里面。一刀切剔掉全部 `org.lwjgl:*`，
+MC 1.20+ 起就会 `NoClassDefFoundError: org.lwjgl.freetype.FreeType`（字体渲染）。
+
+匹配按 `group:artifact` 两段做，`natives-linux` 之类的 classifier 一并剔掉
+（它们本来就只含 `.so`）。单元测试 `launcher::tests` 覆盖了这些边界，
+包括「`org.lwjgl.lwjgl:lwjgl`（2.x 的老坐标）不能被误伤」。
+
+### 5.3 硬约束：classpath 在建 VM 那一刻就定死
+
+`JNI_CreateJavaVM` 的 `-Djava.class.path` 只能在建 VM 时给，之后改不了
+（`-D` 属性里能改的只有少数几个，classpath 不在其中）。所以顺序必须是：
+
+```
+plan() 算 classpath  →  用这份 classpath 建 VM  →  在里面跑 mainClass
+```
+
+**中间不能插探针**。M2/M3 的探针会把 VM 用「三个 jar」的 classpath 建起来，
+之后想真启动就只能重启进程。`java::embedded::vm_alive_for_launch()` 专门
+检测这件事，`LaunchPlan.vm_ready` 就是它，前端会在为 `false` 时提示重启 App。
+
+### 5.4 实测（MuMu / Android 15 / x86_64 / MC 1.21.1）
+
+设备上装的是完整 1.21.1（`1.21.1.jar` 26 MB + 全套 libraries + assets），
+实例在 `<.minecraft>/versions/1.21.1/CCL/instance.json`：
+
+```
+[plan] 实例数=1
+[plan] version=1.21.1 main=net.minecraft.client.main.Main vm_ready=true
+[plan] 条目数=44
+[plan] cp[0]=/data/user/0/com.caiwenjun.ccl/CCL/lwjgl/shim.jar
+[plan] cp[1]=/data/user/0/com.caiwenjun.ccl/CCL/lwjgl/lwjgl-classes.jar
+[plan] cp[2]=/data/user/0/com.caiwenjun.ccl/.minecraft/versions/1.21.1/1.21.1.jar
+[plan] cp[3]=.../libraries/com/github/oshi/oshi-core/6.4.10/oshi-core-6.4.10.jar
+[plan] note=移出 35 条官方 LWJGL 条目（含 natives 分类器），覆盖 5 个模块：
+             lwjgl-glfw, lwjgl-openal, lwjgl-opengl, lwjgl-stb, lwjgl
+[plan] note=保留官方 LWJGL 模块：lwjgl-freetype, lwjgl-jemalloc, lwjgl-tinyfd
+[plan] jvm=-Xmx4096M -Djava.library.path=<CCL>/lwjgl:<...>/natives
+          -Dorg.lwjgl.opengl.libname=libltw.so -Djna.tmpdir=... -Dio.netty.native.workdir=...
+[plan] game=--username Steve --version 1.21.1 --gameDir ... --assetsDir ... --assetIndex 17 ...
+```
+
+- `条目数=44`：我们的 2 个 + 版本 jar + 41 个库，正好比原始 44+… 少了被剔的那些
+- 「覆盖 5 个模块」而不是 6 —— 1.21.1 的版本 JSON 里本来就没有 `lwjgl-nanovg`
+- `-Djava.library.path` 里 `<CCL>/lwjgl` **排在最前**，否则 MC 目录下的
+  `natives` 会先被搜到（那里面只有 jna 临时文件）
+
+### 5.5 已知待办：jemalloc 缺 native
+
+`lwjgl-jemalloc` 的官方 jar 保留了，但我们的 natives 里**没有**
+`liblwjgl_jemalloc.so`。LWJGL 只在显式设置 `-Dorg.lwjgl.system.allocator=jemalloc`
+时才加载它，MC 默认不走这条路，所以目前没报错；真要报
+`Failed to locate library: liblwjgl_jemalloc.so`，两个办法：
+从 Pojav 的完整包里补这个 so，或者在 plan 里把 jemalloc 也剔掉
+（前提是先确认 MC 真的不调 `JEmalloc`）。
+
 ## 调试开关
 
 | 开关                    | 位置                                              | 用途                               |
 | --------------------- | ----------------------------------------------- | -------------------------------- |
 | `<data>/jvm-opts.txt` | `<data>` = `/data/user/0/com.caiwenjun.ccl/CCL` | 一行一个 JVM 选项追加到默认值后（模拟器加 `-Xint`） |
 | `<data>/auto-probe`   | 同上（空文件即可）                                       | 启动 6 秒后自动跑一遍 JVM/LWJGL/首帧探针并打 logcat |
+| `<data>/auto-plan`    | 同上                                              | 启动 3 秒后算一次 M4-b 启动计划并打 logcat（M4-b-1） |
 | Intent `ccl_overlay`  | 启动参数                                            | `--ez ccl_overlay true` 让 SurfaceView 盖住 WebView（M4-a） |
 
 用 adb 操作：
@@ -550,13 +660,14 @@ adb logcat -s RustStdoutStderr | grep '\[probe\]'
 
 # 置顶演示：约 7 秒后出画面，画 8 秒后自动收回
 adb shell am start -n com.caiwenjun.ccl/.MainActivity --ez ccl_overlay true
+
+# 算一次 M4-b 启动计划（看 classpath 顺序对不对）
+adb shell run-as com.caiwenjun.ccl touch CCL/auto-plan
+adb logcat -s RustStdoutStderr | grep '\[plan\]'
 ```
 
 ## 构建（Windows 下绕开符号链接限制）
 
-
-|  |  |  |
-| --- | --- | --- |
 `bash build-android.sh [arm64|x86_64] [release|debug]`
 
 tauri CLI 会把 `libccl_lib.so` 符号链接进 jniLibs，普通账号没有该权限必失败。
