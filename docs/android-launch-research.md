@@ -221,3 +221,102 @@ M1 失败的话整条路要重估，所以必须先做 M1。
 - `StoragePermissionPlugin.kt` 已有现成的插件通道可以加命令
 
 如果 M1 通过，再决定是否把 `pojavexec` 那套搬进来。
+
+---
+
+# 实施记录
+
+## M1 —— 内嵌 JVM（2026-10-31 完成）
+
+`src-tauri/src/java/embedded.rs`：`dlopen(libjvm.so, RTLD_NOW|RTLD_GLOBAL)` + `JNI_CreateJavaVM`，
+跑在 `spawn_blocking` 里（该线程成为 JVM main thread）。结果 `OnceLock` 缓存，
+不调 `DestroyJavaVM`（会阻塞）。
+
+实测（MuMu / Android 15 / x86_64）：
+
+```
+vm_ok=true  rc=0(JNI_OK)  java.version=21.0.12-internal  os.arch=amd64  191 ms
+```
+
+踩过的坑：
+
+| 现象 | 原因 | 解法 |
+|---|---|---|
+| `libnio.so: dlopen failed: library "libnet.so" not found` | Android linker 解析 `DT_NEEDED` 只在**自己 namespace 的搜索路径**里找，JRE 的 `lib/` 不在其中；`java.library.path` 只影响 `System.loadLibrary` 拼绝对路径，管不了 so 内部的依赖 | 启动前把 `<jre>/lib/*.so` 逐个 `dlopen(RTLD_GLOBAL)` 塞进 namespace，多轮扫描处理依赖顺序 |
+| JVM 信号处理链崩在 `__rt_sigprocmask` | 预加载把 `libjsig.so` 也拉进来了，它和 ART 的 `libsigchain` 抢同一批信号 | 预加载时排除 `libjsig.so` |
+| 模拟器 `Fatal signal 4 (SIGILL)` | 模拟器 CPU 能力上报与实际不符，JIT 编出跑不了的指令 | 调试时 `<data>/jvm-opts.txt` 写 `-Xint`；真机不受影响 |
+
+## M2 —— LWJGL 移植层（2026-10-31 完成）
+
+`src-tauri/src/java/lwjgl.rs`：把 Pojav 的 natives 打成 `tar.xz` 放进 APK assets，
+首装解到 `<data>/lwjgl/`，通过 `-Djava.library.path` + `-Dorg.lwjgl.librarypath` 交给 JVM。
+
+装进去的东西（每 ABI 12 个 so，xz 后约 1.5 MB）：
+
+```
+libpojavexec.so     EGL 桥 + 输入桥（GLFW 的 native 实现）
+liblwjgl.so         lwjgl 核心 JNI
+liblwjgl_opengl.so  OpenGL
+liblwjgl_stb.so / liblwjgl_tinyfd.so / liblwjgl_nanovg.so
+libltw.so           GLES→GL 翻译（MC 1.17+ 需要 GL 3.2，GL4ES 只到 2.1，所以选 LTW）
+libopenal.so        声音
+libfreetype.so      字形
+libbytehook.so / libexithook.so / liblinkerhook.so
+```
+
+外加 `lwjgl-classes.jar`（Pojav 的 fat jar，含 fork 版 `org.lwjgl.glfw.GLFW` 纯 Java 实现）。
+
+实测（同一台 MuMu）：
+
+```
+native.pojavexec=ok   native.lwjgl=ok   native.lwjgl_opengl=ok
+lwjgl.version=3.3.3-snapshot    lwjgl.memalloc=ok
+glfw.class=ok         glfw.version=3.4.0
+```
+
+### 关键坑：jar 与 so 不是同一代
+
+APK 自带的 `lwjgl-glfw-classes.jar` 里 `GLFW` 已经是 v3（有 `internalWindowSizeChanged`、
+`keyDownBuffer`），但 `CallbackBridge` 还停在 v2 —— 只有 `nativeSendData(boolean,int,String)`。
+而 `libpojavexec.so` 是 **input_bridge_v3**，`JNI_OnLoad` 注册的是一批全新 native：
+
+```
+nativeSendChar(C)Z          nativeSendKey(IIII)V
+nativeSendCharMods(CI)Z     nativeSendMouseButton(III)V
+nativeSendCursorPos(FF)V    nativeSendScreenSize(II)V
+nativeSendScroll(DD)V       nativeSetUseInputStackQueue(Z)V
+```
+
+少一个就 `NoSuchMethodError`，整个 `loadLibrary("pojavexec")` 失败。
+（这个清单是解析 so 的 `.rela.dyn` 重定位表还原出来的，不是猜的。）
+
+**解法**：`src-tauri/android/shim/org/lwjgl/glfw/CallbackBridge.java` 写一份兼容实现，
+打成 `shim.jar` 排在 classpath 最前面，覆盖 fat jar 里那份 v2。
+
+### glfwInit 为什么还不能调
+
+`glfwInit` 会取 `ANativeWindow` 和当前 Activity 的 Surface，没接上时是**原生层空指针**
+（不是可捕获的异常），直接 SIGSEGV 带走进程。探针默认跳过（`glfw.init=skipped`），
+要用 `-Dccl.probe.glfwInit=true` 才试。这是 M3 的活。
+
+## 调试开关
+
+| 开关 | 位置 | 用途 |
+|---|---|---|
+| `<data>/jvm-opts.txt` | `<data>` = `/data/user/0/com.caiwenjun.ccl/CCL` | 一行一个 JVM 选项追加到默认值后（模拟器加 `-Xint`） |
+| `<data>/auto-probe` | 同上（空文件即可） | 启动 6 秒后自动跑 M2 探针并打 logcat |
+
+用 adb 操作：
+
+```bash
+adb shell run-as com.caiwenjun.ccl touch CCL/auto-probe
+adb shell run-as com.caiwenjun.ccl cp /sdcard/jvm-opts.txt CCL/java/jvm-opts.txt
+adb logcat -s RustStdoutStderr | grep '\[M2\]'
+```
+
+## 构建（Windows 下绕开符号链接限制）
+
+`bash build-android.sh [arm64|x86_64] [release|debug]`
+
+tauri CLI 会把 `libccl_lib.so` 符号链接进 jniLibs，普通账号没有该权限必失败。
+脚本改成 cargo 编完手工 `cp` 进 jniLibs，再用 `-x rustBuild*` 跳过 gradle 侧的 rust 任务。

@@ -17,6 +17,9 @@ pub mod smoke;
 /// 内嵌 JVM 实验（仅 Android 有意义）：验证能否在 App 进程内 JNI_CreateJavaVM。
 /// 这是"安卓能不能真的出画面"的前置条件 —— 子进程拿不到 Surface，必须同进程。
 pub mod embedded;
+/// LWJGL 移植层（M2）：Pojav 的 natives + fork 版 GLFW classes。
+/// 官方 LWJGL 的 linux natives 依赖 libGL/libX11，Android 上加载不了。
+pub mod lwjgl;
 
 #[cfg(not(target_os = "android"))]
 pub mod desktop;
@@ -106,4 +109,11 @@ pub async fn java_smoke_test(app: AppHandle) -> Result<smoke::SmokeReport, Strin
 #[tauri::command]
 pub async fn java_embedded_test(app: AppHandle) -> Result<embedded::EmbeddedReport, String> {
     embedded::run(app).await
+}
+
+/// LWJGL 连通性探针（M2）：解包 Pojav 的 natives，在内嵌 JVM 里依次验证
+/// 「natives 能加载 → lwjgl 核心能调 → fork 版 GLFW 能初始化」。
+#[tauri::command]
+pub async fn java_lwjgl_probe(app: AppHandle) -> Result<lwjgl::LwjglReport, String> {
+    lwjgl::run(app).await
 }

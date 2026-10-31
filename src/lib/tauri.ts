@@ -170,6 +170,27 @@ export interface EmbeddedReport {
   verdict: string;
 }
 
+/**
+ * LWJGL 移植层探针（M2）结果。
+ * Pojav 的 natives + fork 版 GLFW classes 能在内嵌 JVM 里加载并初始化，
+ * 才谈得上让 MC 渲染。
+ */
+export interface LwjglReport {
+  dir: string;
+  abi: string;
+  native_count: number;
+  prepare_ms: number;
+  prepared_cached: boolean;
+  vm_ok: boolean;
+  vm_error: string;
+  classpath: string;
+  library_path: string;
+  probe: string;
+  steps_ok: number;
+  steps_fail: number;
+  verdict: string;
+}
+
 export interface Account {
   uuid: string;
   name: string;
@@ -309,6 +330,8 @@ export const api = {
   javaSmokeTest: () => invoke<SmokeReport>("java_smoke_test"),
   /** 内嵌 JVM 实验：在 App 进程内建 VM（安卓出画面的前置条件） */
   javaEmbeddedTest: () => invoke<EmbeddedReport>("java_embedded_test"),
+  /** LWJGL 移植层探针：验证 Pojav 的 natives + fork 版 GLFW 能否在内嵌 JVM 里跑起来 */
+  javaLwjglProbe: () => invoke<LwjglReport>("java_lwjgl_probe"),
   // Android 存储权限（MANAGE_EXTERNAL_STORAGE）：检测与申请
   checkStoragePermission: () =>
     invoke<{ granted: boolean }>("plugin:ccl-android|check_storage_permission"),

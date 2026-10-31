@@ -255,6 +255,14 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 /// 解压走「先落地成同目录临时 .tar 再解开」，而不是把整包塞进内存：
 /// JRE 17 的 universal 解压后约 180 MB，全量读进 Vec 在低端机上必 OOM。
 fn extract_tar_xz(tar_xz: &Path, dest: &Path) -> Result<(usize, usize), String> {
+    extract_tar_xz_shared(tar_xz, dest)
+}
+
+/// 真正实现，供 LWJGL 移植层复用（`java::lwjgl` 也要解自己的 tar.xz）
+pub(crate) fn extract_tar_xz_shared(
+    tar_xz: &Path,
+    dest: &Path,
+) -> Result<(usize, usize), String> {
     let tmp_tar = tar_xz.with_extension("tar.tmp");
     {
         let f = std::fs::File::open(tar_xz).map_err(|e| format!("打开压缩包失败: {e}"))?;

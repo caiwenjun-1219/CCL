@@ -12,6 +12,7 @@ import {
   Stethoscope,
   X,
   FlaskConical,
+  Boxes,
 } from "lucide-react";
 import { useApp } from "../store/app";
 import {
@@ -20,6 +21,7 @@ import {
   type JavaEnv,
   type SmokeReport,
   type EmbeddedReport,
+  type LwjglReport,
 } from "../lib/tauri";
 import { isMobile } from "../lib/env";
 
@@ -49,6 +51,9 @@ export default function JavaPage() {
   const [emb, setEmb] = useState<EmbeddedReport | null>(null);
   const [embBusy, setEmbBusy] = useState(false);
   const [embErr, setEmbErr] = useState<string | null>(null);
+  const [lw, setLw] = useState<LwjglReport | null>(null);
+  const [lwBusy, setLwBusy] = useState(false);
+  const [lwErr, setLwErr] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -120,6 +125,19 @@ export default function JavaPage() {
       setEmbErr(String(e));
     } finally {
       setEmbBusy(false);
+    }
+  };
+
+  const runLwjgl = async () => {
+    setLwBusy(true);
+    setLwErr(null);
+    try {
+      setLw(await api.javaLwjglProbe());
+    } catch (e) {
+      setLw(null);
+      setLwErr(String(e));
+    } finally {
+      setLwBusy(false);
     }
   };
 
@@ -297,6 +315,66 @@ export default function JavaPage() {
                 )}
                 {emb.cached && <Line label="说明" value="VM 每进程只能建一次，这是上次的结果" />}
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAndroid && (
+        <div className="card mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Boxes size={15} className="text-ccl-muted" />
+              <h2 className="text-[13px] font-bold">LWJGL 移植层（出画面的前提）</h2>
+            </div>
+            <button className="btn !py-1 !px-3 !text-[12px]" disabled={lwBusy} onClick={runLwjgl}>
+              {lwBusy ? <Loader2 size={12} className="animate-spin" /> : <Boxes size={12} />}
+              {lw ? "再测一次" : "开始检测"}
+            </button>
+          </div>
+          <p className="text-[12px] text-ccl-muted leading-relaxed mb-3">
+            MC 的渲染全靠 LWJGL，而官方 LWJGL 的 <code>natives-linux</code> 依赖{" "}
+            <code>libGL.so</code>／<code>libX11</code>，Android 上加载不了。这里解包并加载
+            Pojav 那套移植版（<code>libpojavexec</code> + fork 版 GLFW 纯 Java 实现），
+            依次验证：natives 能加载 → lwjgl 核心能调 → GLFW 能初始化。
+          </p>
+
+          {lwErr && (
+            <div className="flex items-start gap-2 text-[12px] text-ccl-danger">
+              <X size={13} className="mt-0.5 shrink-0" /> {lwErr}
+            </div>
+          )}
+
+          {lw && (
+            <div className="space-y-2">
+              <div
+                className={`text-[12px] leading-relaxed rounded-md px-3 py-2 border ${
+                  lw.steps_fail === 0
+                    ? "border-ccl-accent2/40 bg-ccl-accent2/5 text-ccl-accent2"
+                    : lw.vm_ok
+                      ? "border-ccl-warn/40 bg-ccl-warn/5 text-ccl-warn"
+                      : "border-ccl-danger/40 bg-ccl-danger/5 text-ccl-danger"
+                }`}
+              >
+                {lw.verdict}
+              </div>
+              <div className="text-[11.5px] bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 space-y-1">
+                <Line label="ABI" value={lw.abi} mono />
+                <Line
+                  label="解包目录"
+                  value={`${lw.dir}（${lw.native_count} 个 .so，${
+                    lw.prepared_cached ? "复用" : `${lw.prepare_ms} ms`
+                  }）`}
+                  mono
+                />
+                <Line label="检查项" value={`${lw.steps_ok} 通过 / ${lw.steps_fail} 失败`} />
+                {!lw.vm_ok && <Line label="JVM" value={lw.vm_error} />}
+              </div>
+              {lw.probe && (
+                <pre className="text-[11px] leading-relaxed bg-ccl-bg border border-ccl-border rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap text-ccl-muted">
+                  {lw.probe.trim()}
+                </pre>
+              )}
             </div>
           )}
         </div>

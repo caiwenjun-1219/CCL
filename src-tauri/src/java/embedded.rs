@@ -1,27 +1,32 @@
-//! 内嵌 JVM 实验（M1 里程碑）
+//! 内嵌 JVM（M1 起）：在 App 进程内 dlopen libjvm.so + JNI_CreateJavaVM
 //!
-//! ## 为什么需要这个
+//! ## 为什么必须同进程
 //!
 //! Android 上 `Command::new(java)` 起的是独立进程。它没有 ART、没有 Binder，
 //! 拿不到 SurfaceView 的 `ANativeWindow`，因此 MC 的图形层（EGL）根本无从建立。
 //! Pojav / FCL 走的是另一条路：把 `lib/server/libjvm.so` 映射进 App 自己的进程，
 //! 调 `JNI_CreateJavaVM` 建 VM，这样渲染、输入、Surface 全在同进程内。
 //!
-//! ## 这一步只验证什么
+//! ## 一个进程只能建一次
 //!
-//! 只验证「VM 能不能在本进程里建起来」以及「能不能从里面读出系统属性」。
-//! 建不起来，后面的 glfw stub / EGL 桥 / GL4ES 全部免谈，所以必须先验。
+//! `JNI_CreateJavaVM` 第二次调用返回 `JNI_EEXIST`。而这次调用必须带上
+//! **完整且正确**的 classpath / java.library.path —— 建完之后改不了（能改的只有
+//! `-D` 属性里的少数几个，classpath 不在其中）。所以所有要用 JVM 的业务
+//! （M1 自检、M2 探针、以后真正启动 MC）都必须走同一个 [`ensure_vm`]，
+//! 由它一次性把配置定死。
 //!
-//! ## 已知约束
+//! ## 线程
 //!
-//! - `JNI_CreateJavaVM` **一个进程只能成功一次**，第二次返回 `JNI_EEXIST`。
-//!   所以结果用 `OnceLock` 缓存，重复调用直接返回上次的结论。
-//! - VM 建起来之后**不要销毁**（`DestroyJavaVM` 会阻塞到所有非 daemon 线程退出）。
-//!   App 退出即回收，M1 阶段不需要优雅关闭。
-//! - 调用线程会变成 JVM 的 main 线程，因此必须放在 `spawn_blocking` 里，
-//!   不能占用异步 runtime 线程。
+//! 调用 `JNI_CreateJavaVM` 的线程会变成 JVM 的 main 线程，且该线程的 `JNIEnv`
+//! 只在这次调用里有效。因此建 VM 必须放在 `spawn_blocking`（不能占异步 runtime
+//! 线程），后续业务线程各自 `attach_current_thread`。
+//!
+//! VM 建起来之后**不销毁**（`DestroyJavaVM` 会阻塞到所有非 daemon 线程退出），
+//! App 退出即回收。
 
 use serde::Serialize;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::AppHandle;
 
 /// 一次内嵌 JVM 实验的完整结果
@@ -54,6 +59,16 @@ pub struct EmbeddedReport {
     /// VM 里报告的 java.home（验证 -Djava.home 是否生效）
     pub java_home: String,
 
+    /// 建 VM 时用的 classpath（排查类找不到时最有用）
+    pub classpath: String,
+    /// 建 VM 时用的 java.library.path
+    pub library_path: String,
+
+    /// 预加载成功的 JRE 自带 .so 个数
+    pub preload_ok: usize,
+    /// 预加载失败的（缺依赖的库，比如需要 X11 的 libawt）
+    pub preload_fail: usize,
+
     /// 创建耗时（毫秒）—— 冷启动体验的关键指标
     pub elapsed_ms: u64,
     /// 是否为缓存的旧结果（VM 只能建一次）
@@ -62,9 +77,28 @@ pub struct EmbeddedReport {
     pub verdict: String,
 }
 
+/// 建 VM 需要的一次性配置。
+///
+/// 字段刻意做成「调用方填字符串」而不是自己拼，因为 classpath 的顺序
+/// 有语义（fork 版 glfw classes 必须排在官方 jar 前面才能生效）。
+#[derive(Clone, Default)]
+pub struct VmConfig {
+    /// JRE 根目录（含 `lib/server/libjvm.so`）
+    pub jre_home: PathBuf,
+    /// 完整 classpath，已按 `:` 拼好
+    pub classpath: String,
+    /// `-Djava.library.path`：**必须包含 JRE 自己的 `lib` 与 `lib/server`**，
+    /// 否则 JRE 内部模块（libnio → libnet）都加载不出来。
+    pub library_path: String,
+    /// `-Dorg.lwjgl.librarypath`：LWJGL 找我们自己那套 natives 的地方
+    pub lwjgl_path: String,
+    /// 额外的 `-D` / `-X` 选项
+    pub extra_opts: Vec<String>,
+}
+
 #[cfg(target_os = "android")]
 mod imp {
-    use super::EmbeddedReport;
+    use super::{EmbeddedReport, VmConfig};
 
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_int, c_void};
@@ -72,8 +106,9 @@ mod imp {
     use std::ptr::null_mut;
     use std::sync::OnceLock;
 
-    /// 进程内唯一的一次实验结果
-    static RESULT: OnceLock<EmbeddedReport> = OnceLock::new();
+    /// 进程内唯一的一次实验结果。失败不写缓存，允许换 JRE 重试。
+    static VM: OnceLock<jni::JavaVM> = OnceLock::new();
+    static REPORT: OnceLock<EmbeddedReport> = OnceLock::new();
 
     extern "C" {
         fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
@@ -117,10 +152,83 @@ mod imp {
         jre_home.join("lib").join("server").join("libjvm.so")
     }
 
+    /// 预加载 JRE 自带的 JNI 库。
+    ///
+    /// ## 为什么必须这么做
+    ///
+    /// Android 的 linker 解析 `DT_NEEDED` 时**只在自己 namespace 的搜索路径**里找，
+    /// 而 JRE 的 `lib/` 不在其中。于是 `libnio.so`（NEEDED `libnet.so`）用绝对路径
+    /// dlopen 时，linker 找不到同目录的 `libnet.so`，直接报
+    /// `dlopen failed: library "libnet.so" not found: needed by ...libnio.so`。
+    ///
+    /// Pojav 的做法是 `liblinkerhook.so` 劫持 `dlopen` 改搜索路径。我们换个更省事的：
+    /// 启动前把 `lib/*.so` 全部用绝对路径 dlopen 进 namespace（`RTLD_GLOBAL`），
+    /// 之后 linker 按 soname 查找就会命中这些已加载的库。
+    ///
+    /// 依赖有先后（libnet 要早于 libnio），一轮扫不干净，所以多轮直到没有新进展。
+    /// 加载不了的（需要 X11 / CUPS 的 libawt 之类）直接跳过，不影响 JVM 本身。
+    ///
+    /// **`libjsig.so` 必须排除**：它是 HotSpot 的「信号链」库，设计用途是启动前
+    /// `LD_PRELOAD`，会 interpose `sigaction`/`sigprocmask`。App 进程里已经由 ART 的
+    /// `libsigchain` 占了这个位置，再 dlopen 一个 libjsig 进去会两家抢同一批信号，
+    /// 表现为 JVM 自己的 SIGSEGV/SIGILL 处理链崩在 `__rt_sigprocmask` 里。
+    fn preload_jre_libs(lib: &Path) -> (usize, usize) {
+        const SKIP: &[&str] = &["libjsig.so"];
+        let mut pending: Vec<PathBuf> = match std::fs::read_dir(lib) {
+            Ok(it) => it
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "so").unwrap_or(false))
+                .filter(|p| {
+                    let name = p.file_name().map(|n| n.to_string_lossy().to_string());
+                    !name.map(|n| SKIP.contains(&n.as_str())).unwrap_or(false)
+                })
+                .collect(),
+            Err(_) => return (0, 0),
+        };
+        let total = pending.len();
+        pending.sort();
+
+        let mut ok = 0usize;
+        loop {
+            let mut rest = Vec::new();
+            let mut progress = 0usize;
+            for p in pending {
+                let success = match CString::new(p.to_string_lossy().as_bytes()) {
+                    Ok(c) => unsafe { !dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL).is_null() },
+                    Err(_) => false,
+                };
+                if success {
+                    progress += 1;
+                } else {
+                    rest.push(p);
+                }
+            }
+            ok += progress;
+            pending = rest;
+            if progress == 0 || pending.is_empty() {
+                break;
+            }
+        }
+        (ok, total.saturating_sub(ok))
+    }
+
+    /// 已经建好的 VM（用于后续 attach，不重复建）
+    pub fn cached_vm() -> Option<&'static jni::JavaVM> {
+        VM.get()
+    }
+
+    pub fn cached_report() -> Option<EmbeddedReport> {
+        REPORT.get().cloned()
+    }
+
     /// 真正建 VM 的逻辑（阻塞，必须跑在独立线程）
-    pub fn create_vm(jre_home: &Path) -> EmbeddedReport {
+    pub fn create_vm(cfg: &VmConfig) -> EmbeddedReport {
         let mut r = EmbeddedReport::default();
+        let jre_home = &cfg.jre_home;
         r.java_dir = jre_home.to_string_lossy().to_string();
+        r.classpath = cfg.classpath.clone();
+        r.library_path = cfg.library_path.clone();
 
         let libjvm = libjvm_of(jre_home);
         r.libjvm_path = libjvm.to_string_lossy().to_string();
@@ -154,6 +262,12 @@ mod imp {
         }
         r.dlopen_ok = true;
 
+        // ---- 1.5 先把 JRE 自己的 JNI 库全部拉进 linker namespace
+        // （不做这步，libnio 找不到同目录的 libnet，后面任何用到 NIO 的代码都会炸）
+        let (ok, fail) = preload_jre_libs(&jre_home.join("lib"));
+        r.preload_ok = ok;
+        r.preload_fail = fail;
+
         // ---- 2. 找函数
         let sym = unsafe {
             let name = CString::new("JNI_CreateJavaVM").unwrap();
@@ -170,20 +284,37 @@ mod imp {
         //
         // 这些选项不是随便挑的：
         // - `-Djava.home` 必须给，否则 JVM 会去 `/` 找运行时，读不到 modules/classlist
-        // - `-Djava.class.path` 给个存在的目录即可，M1 不需要业务类
+        // - `-Djava.library.path` 决定 `System.loadLibrary` 能不能找到我们的 .so
         // - `-Xmx` 限住，避免先把手机内存吃满掩盖真正的问题
-        let classpath_dir = jre_home.join("..").join("embedded-cp");
-        let _ = std::fs::create_dir_all(&classpath_dir);
-
-        let opt_strings = vec![
+        let mut opt_strings = vec![
             format!("-Djava.home={}", jre_home.display()),
-            format!("-Djava.class.path={}", classpath_dir.display()),
+            format!("-Djava.class.path={}", cfg.classpath),
+            format!("-Djava.library.path={}", cfg.library_path),
+            // LWJGL 自己也会读这个属性（Library.loadNative 的第二条查找路径）
+            format!("-Dorg.lwjgl.librarypath={}", cfg.lwjgl_path),
             format!("-Djava.io.tmpdir={}", jre_home.join("..").display()),
-            "-Xmx256m".to_string(),
-            // 只到 C1：模拟器上 C2 会编出 CPU 不支持的指令（Fatal signal 4），
-            // M1 只需要调 System.getProperty，用不着 C2
+            "-Xmx512m".to_string(),
+            // 只到 C1：模拟器上 C2 会编出 CPU 不支持的指令（Fatal signal 4）。
+            // M1/M2 只需要跑小探针，用不着 C2；真正启动 MC 时再评估。
             "-XX:TieredStopAtLevel=1".to_string(),
         ];
+        opt_strings.extend(cfg.extra_opts.iter().cloned());
+
+        // 调试逃生口：`<data>/jvm-opts.txt` 里一行一个选项，追加到默认选项之后。
+        // 安卓上改一行 JVM 参数要重新打 250 MB 的包、装 8 分钟，这个文件让
+        // 「换参数 → 重启 App」变成 adb push + am force-stop 两步。
+        let extra_file = jre_home.join("..").join("jvm-opts.txt");
+        if let Ok(text) = std::fs::read_to_string(&extra_file) {
+            for line in text.lines() {
+                let s = line.trim();
+                if s.is_empty() || s.starts_with('#') {
+                    continue;
+                }
+                println!("[ccl-jvm] 追加选项 {s}");
+                opt_strings.push(s.to_string());
+            }
+        }
+
         let mut c_opts: Vec<CString> = opt_strings
             .iter()
             .filter_map(|s| CString::new(s.as_str()).ok())
@@ -267,7 +398,7 @@ mod imp {
 
         if r.vm_ok {
             r.verdict = format!(
-                "内嵌 JVM 可用（{}，{} ms）。下一步接 glfw stub + EGL 桥 + GL4ES。",
+                "内嵌 JVM 可用（{}，{} ms）。",
                 r.java_version, r.elapsed_ms
             );
         } else {
@@ -278,20 +409,96 @@ mod imp {
         }
 
         // 保持 vm 存活：不调 DestroyJavaVM（会阻塞到所有非 daemon 线程退出）
-        std::mem::forget(vm);
+        if r.vm_ok {
+            let _ = VM.set(vm);
+        } else {
+            std::mem::forget(vm);
+        }
         r
-    }
-
-    pub fn get_cached() -> Option<EmbeddedReport> {
-        RESULT.get().cloned()
-    }
-
-    pub fn put_cache(r: EmbeddedReport) {
-        let _ = RESULT.set(r);
     }
 }
 
-/// 执行内嵌 JVM 实验。
+/// 串行化建 VM 的尝试：两个线程同时进来会一个成功一个 JNI_EEXIST，
+/// 加锁后第二个直接拿到缓存。
+static CREATE_LOCK: Mutex<()> = Mutex::new(());
+
+/// 拿到进程内唯一的 VM；第一次调用会真正创建。
+///
+/// 无论成功失败都返回报告（失败时 `vm` 为 `None`），这样 UI 总能显示细节。
+/// `report.cached=true` 表示这是之前建好的。
+#[cfg(target_os = "android")]
+pub fn ensure_vm(cfg: VmConfig) -> (Option<&'static jni::JavaVM>, EmbeddedReport) {
+    let _guard = match CREATE_LOCK.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            let mut r = EmbeddedReport::default();
+            r.verdict = "VM 创建锁中毒".into();
+            return (None, r);
+        }
+    };
+
+    if let (Some(vm), Some(mut report)) = (imp::cached_vm(), imp::cached_report()) {
+        report.cached = true;
+        return (Some(vm), report);
+    }
+
+    let report = imp::create_vm(&cfg);
+    let vm = imp::cached_vm();
+    (vm, report)
+}
+
+/// 把当前 JRE 与 LWJGL 路径拼成一份 VM 配置。
+///
+/// 所有需要 JVM 的命令都应该经这里，保证 classpath 顺序一致：
+/// **fork 版 glfw classes 与探针必须排在最前面**，否则官方的
+/// `lwjgl-glfw-3.3.3.jar` 会先被找到，Android 上根本跑不起来。
+#[cfg(target_os = "android")]
+pub fn build_config(app: &AppHandle, jre_home: PathBuf) -> Result<VmConfig, String> {
+    let lw = crate::java::lwjgl::ensure(app)?;
+    // 顺序有语义：shim 的 CallbackBridge 必须压过 fat jar 里那份 v2 实现，
+    // 否则 libpojavexec 的 JNI_OnLoad 找不到 v3 回调，直接 NoSuchMethodError。
+    let classpath = [
+        lw.shim_jar.to_string_lossy().to_string(),
+        lw.probe_jar.to_string_lossy().to_string(),
+        lw.classes_jar.to_string_lossy().to_string(),
+    ]
+    .join(":");
+    let lwjgl_path = lw.dir.to_string_lossy().to_string();
+    // 顺序有讲究：JRE 自己的 lib 必须在内，libnio/libnet/libzip 这些都在那儿；
+    // 我们的 natives 放最后，避免同名库盖掉 JRE 的。
+    let library_path = format!(
+        "{}/lib:{}/lib/server:{}",
+        jre_home.display(),
+        jre_home.display(),
+        lwjgl_path
+    );
+    Ok(VmConfig {
+        jre_home,
+        classpath,
+        library_path,
+        lwjgl_path,
+        extra_opts: vec![],
+    })
+}
+
+/// 由 JRE 根目录反推配置并确保 VM 已建。
+/// 返回 `(vm, report)`，`vm` 为 `None` 表示建失败（`report` 里有原因）。
+#[cfg(target_os = "android")]
+pub fn ensure_vm_for(
+    app: &AppHandle,
+    jre_home: PathBuf,
+) -> (Option<&'static jni::JavaVM>, EmbeddedReport) {
+    match build_config(app, jre_home) {
+        Ok(cfg) => ensure_vm(cfg),
+        Err(e) => {
+            let mut r = EmbeddedReport::default();
+            r.verdict = e;
+            (None, r)
+        }
+    }
+}
+
+/// 执行内嵌 JVM 实验（M1 页面上的那张卡）。
 ///
 /// 结果按进程缓存：`JNI_CreateJavaVM` 只能成功一次，第二次必然 `JNI_EEXIST`，
 /// 直接返回上次结论比返回一个误导性的错误码更有用。
@@ -304,32 +511,28 @@ pub async fn run(app: AppHandle) -> Result<EmbeddedReport, String> {
 
     #[cfg(target_os = "android")]
     {
-        if let Some(mut prev) = imp::get_cached() {
+        if let Some(mut prev) = imp::cached_report() {
             prev.cached = true;
             return Ok(prev);
         }
 
-        let javas = crate::java::scan_javas(app);
-        let info = javas
-            .into_iter()
-            .max_by_key(|j| j.major)
-            .ok_or_else(|| "没有已安装的 Java，先去 Java 页装一个".to_string())?;
+        let report = tokio::task::spawn_blocking(move || {
+            let javas = crate::java::scan_javas(app.clone());
+            let info = javas
+                .into_iter()
+                .max_by_key(|j| j.major)
+                .ok_or_else(|| "没有已安装的 Java，先去 Java 页装一个".to_string())?;
+            let bin = std::path::PathBuf::from(&info.path);
+            let jre_home = bin
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf())
+                .ok_or_else(|| format!("无法从 {} 推出 JRE 根目录", info.path))?;
+            Ok::<_, String>(ensure_vm_for(&app, jre_home))
+        })
+        .await
+        .map_err(|e| format!("实验线程异常: {e}"))??;
 
-        let bin = std::path::PathBuf::from(&info.path);
-        let jre_home = bin
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .ok_or_else(|| format!("无法从 {} 推出 JRE 根目录", info.path))?;
-
-        let report = tokio::task::spawn_blocking(move || imp::create_vm(&jre_home))
-            .await
-            .map_err(|e| format!("实验线程异常: {e}"))?;
-
-        // 只有真正建成 VM（或已经存在）才缓存；失败的可以换个 JRE 再试
-        if report.vm_ok || report.create_rc == -5 {
-            imp::put_cache(report.clone());
-        }
-        Ok(report)
+        Ok(report.1)
     }
 }

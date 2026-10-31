@@ -45,6 +45,7 @@ pub fn run() {
             java::java_env,
             java::java_smoke_test,
             java::java_embedded_test,
+            java::java_lwjgl_probe,
             // Minecraft 版本
             minecraft::mc_version_manifest,
             minecraft::mc_local_versions,
@@ -127,6 +128,40 @@ pub fn run() {
             // 启动时按设置初始化全局代理（影响所有 HTTP 请求）
             let s = settings::load(app.handle());
             proxy::set_proxy(&s.proxy);
+
+            // M2 联调入口：数据目录下存在 `auto-probe` 文件时，启动 6 秒后自动跑一遍
+            // 内嵌 JVM / LWJGL 探针并打到 logcat。
+            //
+            // 为什么不用按钮：MuMu 多 display 下 uiautomator 抓不到应用层，点不准。
+            // 生产环境不会有这个文件，等于零成本；要在设备上验证就
+            //   adb shell run-as com.caiwenjun.ccl touch CCL/auto-probe
+            #[cfg(target_os = "android")]
+            {
+                let data = settings::data_dir(app.handle());
+                if data.join("auto-probe").exists() {
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(6));
+                        let r = tauri::async_runtime::block_on(java::lwjgl::run(h));
+                        match r {
+                            Ok(r) => {
+                                println!("[M2] verdict={}", r.verdict);
+                                println!(
+                                    "[M2] dir={} abi={} so={} ms={} cached={}",
+                                    r.dir, r.abi, r.native_count, r.prepare_ms, r.prepared_cached
+                                );
+                                println!("[M2] vm_ok={} vm_err={}", r.vm_ok, r.vm_error);
+                                println!("[M2] cp={}", r.classpath);
+                                for line in r.probe.lines() {
+                                    println!("[M2] probe {line}");
+                                }
+                            }
+                            Err(e) => println!("[M2] ERR {e}"),
+                        }
+                    });
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

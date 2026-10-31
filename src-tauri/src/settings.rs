@@ -160,6 +160,12 @@ pub fn java_dir(app: &AppHandle) -> PathBuf {
     data_dir(app).join("java")
 }
 
+/// LWJGL 移植层（natives + fork 版 glfw classes）的解包目录。
+/// 与 `java/` 平级：它是运行时依赖，不属于用户可见的游戏数据。
+pub fn lwjgl_dir(app: &AppHandle) -> PathBuf {
+    data_dir(app).join("lwjgl")
+}
+
 pub fn load(app: &AppHandle) -> AppSettings {
     let path = settings_path(app);
     match fs::read_to_string(&path) {
