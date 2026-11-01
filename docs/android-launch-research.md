@@ -1142,7 +1142,71 @@ DecorView 的 index 0，WebView 的 content 层排在后面，永远先拿到 DO
 有焦点」。必须用 `dumpsys window displays` 按 display 分别看，或者直接看
 `dumpsys input` 的 `FocusedWindows`。这一条曾让 M4-b-3 卡了整整一轮。
 
-### 7.8 还没做的
+### 7.8 对照 FCL（同款实现，同机可用）
+
+用户反馈手机上的 **FCL（Fold Craft Launcher）跑 MC 正常**，所以拿它做参照。
+先说结论：**它不是另一条技术路线，而是同一套 PojavLauncher 内核的另一个发行版**，
+头文件里甚至原样留着 `POJAVLAUNCHER_JVM_HOOKS_H`。
+
+#### 它的启动链（源码证据，`FCL-Team/FoldCraftLauncher`）
+
+| 环节 | FCL 做法 | 我们 |
+| --- | --- | --- |
+| 建 VM | `dlopen("libjli.so", RTLD_GLOBAL)` → `JLI_Launch(argc, argv, …)`（`jni/jre_launcher.c`） | 直接 `dlopen libjvm.so` → `JNI_CreateJavaVM` |
+| 建 VM 前 | **把 SIGHUP..NSIG 全部重置**（`SIGSEGV` 用 `SIG_IGN` 绕开 Android 的告警），注释写明「给 JVM 一个干净的信号基座」 | 什么都不做，ART 的 `libsigchain` 还在位 |
+| 崩溃可见性 | 起 `abort_waiter` 线程专收 SIGABRT，转成用户可见的崩溃对话框 | 直接进程消失 |
+| pojavexec | **自建**：`jni/CMakeLists.txt` 里 `pojavexec` = `jre_launcher.c` + `input_bridge_v3.c` + `ctxbridges/*` + `jvm_hooks/*` + `native_hooks/*`，链接 `bytehook` + `androidnsbypass` | 用 Pojav 预编译的 `libpojavexec.so` |
+| JRE | **自建**：`FCL-Team/Android-OpenJDK-Build` 的 `Build_JRE_21` 分支，补丁 `jdk21u_android.diff` / `jdk21u_c23_uabs.diff` / `jdk21u_memnode_o1.diff` | Pojav 的 `jre21-arm64` runner 包 |
+| 默认 JVM 参数 | `-Xmx/-Xms`、`-Dfile.encoding`、`-Xss 1m`、**`-XX:ActiveProcessorCount=<核数>`**、`-Xincgc`(≤8)、`-Dorg.lwjgl.system.allocator=system`、`-Dos.name=Linux`、`-Djdk.lang.Process.launchMechanism=FORK` 等 30 余项 | 只有 8 项，没有 `-Xss`、没有 `ActiveProcessorCount` |
+
+#### 三条推论
+
+1. **「JLI vs JNI_CreateJavaVM」解释不了我们的崩溃**。`auto-embed` 用的是同一个
+   `JNI_CreateJavaVM`、同一套参数，90 秒稳如泰山；崩溃只在加载 pojavexec + GL 之后
+   出现（`auto-probe`）。建 VM 方式这条差异可以排除。
+2. **FCL 的补丁里没有任何指针 tag 相关代码**（全仓 `mtag` / `untag` / `truncated`
+   零命中），说明它也没绕过 scudo 的 tag 校验 —— 它是**没触发**这个问题。
+3. 因此最可疑的两个方向变成：
+   - **GC**：崩溃在 `VM Thread`，且栈上是「遍历链表逐个 `free`」；崩的快慢
+     （5 秒 / 86 秒）随堆压力变化，很像 GC 周期。`auto-embed` 只跑一个空测试类，
+     几乎不分配内存，GC 迟迟不触发 —— 这正好解释「同一个 VM 为什么不崩」。
+   - **JRE 构建差异**：FCL 用自建 JDK，我们用 Pojav 的 runner 包。
+
+#### 插线后按这个顺序验（成本从低到高）
+
+| # | 实验 | 判据 |
+| --- | --- | --- |
+| 1 | `-Xint` | 不崩 → 锁定 JIT 相关；仍崩 → 继续看 #2 |
+| 2 | `auto-embed` + 循环 `new byte[8MB]` 撑满 `-Xmx512m` | **崩 → 证明是 GC + HotSpot，与 pojavexec/GL 无关**（这是最省事的分水岭） |
+| 3 | `-XX:+UseSerialGC` / `-XX:+UseParallelGC` 对照 | 换个 GC 不崩 → GC 实现相关 |
+| 4 | 把 FCL 手机上的 `jre21` 整目录拷进 `CCL/java/jre21-arm64` 替换 | 不崩 → 是 JRE 构建问题，直接换包 |
+| 5 | `-XX:ActiveProcessorCount=<实际核数>` | 对齐 FCL 的参数，排除线程数爆炸 |
+
+FCL 的 JRE 在手机上的位置（插线后先 `find` 一下）：
+
+```bash
+adb shell "ls -d /sdcard/Android/data/com.tungsten.fcl/files/* 2>/dev/null"
+adb shell "find /sdcard -maxdepth 6 -type d -name 'jre21*' 2>/dev/null | head"
+```
+
+上面的实验 1/3/5 已经固化成脚本，插线后一条命令一个：
+
+```bash
+bash scripts/android-exp.sh status     # 设备 / 开关 / JRE 现状
+bash scripts/android-exp.sh xint       # 实验 1
+bash scripts/android-exp.sh gc Serial  # 实验 3
+bash scripts/android-exp.sh apc 8      # 实验 5
+bash scripts/android-exp.sh heap 180   # 实验 2（需要先 build-tc）
+bash scripts/android-exp.sh fcl        # 找 FCL 的 JRE（为实验 4 做准备）
+```
+
+实验 2 的测试类源码在 `src-tauri/android/tc/T.java`（之前一直没入库，是临时编的），
+现在带 `-Dccl.heapTest=1` 开关：开则不断分配 4MB 数组 + 周期性 `System.gc()`，
+把 `-Xmx` 撑满；关则只跑一段算术当基线。**判据**：堆压力下也崩、栈还是
+`VM Thread` + `free` → SIGABRT 属于 HotSpot 的 GC 与 scudo 指针 tag 的合谋，
+跟 pojavexec / GL 无关；不崩 → 才轮到 pojavexec 这条线。
+
+### 7.9 还没做的
 
 - 虚拟按键（跳跃/潜行/打开背包）——现在只能靠手势摸到「移动 + 左右键 + 滚轮」
 - 键盘输入（聊天、命令）：`nativeSendChar` 已在类里声明，缺一个输入法桥
