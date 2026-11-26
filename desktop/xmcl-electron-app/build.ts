@@ -226,7 +226,9 @@ async function start() {
   const targets = platformArg === 'linux'
     ? Platform.LINUX.createTarget(undefined, archs)
     : platformArg === 'mac'
-      ? Platform.MAC.createTarget(undefined, archs)
+      // 显式只打 dmg：不传 targets 时 electron-builder 会按默认目标追加 zip，
+      // 而 zip 在 CI 上会因为 app 目录里的符号链接/并发读而失败（exit 18）。
+      ? Platform.MAC.createTarget(['dmg'], archs)
       : platformArg === 'win'
         ? Platform.WINDOWS.createTarget(undefined, archs)
         : undefined
