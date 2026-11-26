@@ -1,0 +1,10 @@
+name = "ccl"
+compatibility_date = "2026-11-26"
+workers_dev = false
+
+# 纯静态站点：wrangler 会生成 assets-only Worker
+assets = { directory = "./dist" }
+
+routes = [
+  { pattern = "ccl.caiwenjun.top", custom_domain = true }
+]

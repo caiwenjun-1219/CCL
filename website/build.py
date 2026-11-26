@@ -8,7 +8,10 @@ import base64
 import io
 import os
 
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:  # 模板不含截图占位符时不需要 Pillow
+    Image = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "assets")
@@ -24,6 +27,8 @@ SHOTS = {
 
 
 def encode(name, width):
+    if Image is None:
+        raise RuntimeError("模板包含截图占位符，但当前环境缺少 Pillow")
     path = os.path.join(SRC, name)
     im = Image.open(path).convert("RGBA")
     if im.width > width:
@@ -42,9 +47,12 @@ def main():
 
     total = 0
     for key, (name, width) in SHOTS.items():
+        marker = "__%s__" % key
+        if marker not in html:
+            continue
         uri = encode(name, width)
         total += len(uri)
-        html = html.replace("__%s__" % key, uri)
+        html = html.replace(marker, uri)
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
         f.write(html)
