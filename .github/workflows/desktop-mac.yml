@@ -26,9 +26,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13 # Intel
+          # 2026-11-02 起 GitHub 退役了 macos-13/macos-14，
+          # 现役 Intel 镜像是 macos-15-intel，Apple Silicon 是 macos-15。
+          - os: macos-15-intel # Intel x64
             arch: x64
-          - os: macos-14 # Apple Silicon
+          - os: macos-15 # Apple Silicon
             arch: arm64
     defaults:
       run:
