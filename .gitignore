@@ -2,8 +2,8 @@
 node_modules/
 
 # Build output
-dist/
-build/
+/dist/
+/build/
 
 # Tauri / Rust
 src-tauri/target/
@@ -31,6 +31,6 @@ cloud-worker/package-lock.json
 probe_mirrors*.py
 
 # 构建产物
-*.exe
-*.msi
+/*.exe
+/*.msi
 bundle/

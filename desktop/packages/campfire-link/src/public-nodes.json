@@ -1,0 +1,133 @@
+{
+  "source": "https://info.qtet.cn/uptime/easytier",
+  "sourceTitle": "EasyTier 公共节点监控（qtet.cn）",
+  "updated": "2026-11-25",
+  "disclaimer": "地址列表取自 qtet.cn 的 EasyTier 社区公共节点监控页。公共节点由社区成员自愿提供，随时可能下线、限速或更改地址；被打码（含 *）的节点需加入 EasyTier 官方 QQ 群获取完整地址。",
+  "communityGroups": ["949700262", "837676408", "957189589"],
+  "nodes": [
+    {
+      "id": "sh-ct",
+      "provider": "海波",
+      "location": "上海电信",
+      "url": "tcp://225284.xyz:11010",
+      "protocol": "tcp",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "xm-ct",
+      "provider": "为爱，唯爱",
+      "location": "厦门电信",
+      "url": "tcp://easytier.weiai.org.cn:11010",
+      "protocol": "tcp",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "nc-ct",
+      "provider": "Qicwken",
+      "location": "南昌电信家宽",
+      "url": "txt://net.qicwken.top",
+      "protocol": "txt",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "cq-cm",
+      "provider": "Just the Two of Us",
+      "location": "重庆移动跨网专线",
+      "url": "tcp://183.230.36.171:11010",
+      "protocol": "tcp",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "zz-bgp",
+      "provider": "宇智波.希",
+      "location": "枣庄 BGP",
+      "url": "udp://et.basd1.de:11010",
+      "protocol": "udp",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "sh-bgp",
+      "provider": "夏夜",
+      "location": "上海 BGP",
+      "url": "tcp://et.sumnight.top:11010",
+      "protocol": "tcp",
+      "relay": true,
+      "limited": true,
+      "masked": false,
+      "note": "中转限速 500KB/s"
+    },
+    {
+      "id": "cn-eo",
+      "provider": "ChinoKou",
+      "location": "EdgeOne",
+      "url": "wss://et.chinokou.cn",
+      "protocol": "wss",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "yn-cu",
+      "provider": "凉城听暖",
+      "location": "云南联通",
+      "url": "https://et-public.lctn.site",
+      "protocol": "https",
+      "relay": true,
+      "masked": false
+    },
+    {
+      "id": "bj-volc",
+      "provider": "Atomire",
+      "location": "北京火山云 / 阿里云 ESA",
+      "url": "wss://bja-etpbc.teleseon.cn",
+      "protocol": "wss",
+      "relay": false,
+      "masked": false,
+      "note": "禁中转，仅直连"
+    },
+    {
+      "id": "volc-fxm",
+      "provider": "饭小米",
+      "location": "火山云",
+      "url": "tcp://et1.f*s.top:11010",
+      "protocol": "tcp",
+      "relay": true,
+      "masked": true
+    },
+    {
+      "id": "us-ct",
+      "provider": "海波",
+      "location": "美国 / 云南电信出口",
+      "url": "udp://us01.225284.xyz:11010",
+      "protocol": "udp",
+      "relay": true,
+      "masked": false,
+      "oversea": true
+    },
+    {
+      "id": "intl-cf",
+      "provider": "林然",
+      "location": "Cloudflare",
+      "url": "wss://et.xn--6kr850c.com",
+      "protocol": "wss",
+      "relay": true,
+      "masked": false,
+      "oversea": true
+    },
+    {
+      "id": "intl-wk",
+      "provider": "zkitefly",
+      "location": "海外",
+      "url": "https://etnode.zkitefly.eu.org/node2",
+      "protocol": "https",
+      "relay": true,
+      "masked": false,
+      "oversea": true,
+      "note": "来自 Campfire 上游节点表，未在 qtet 监控页列出"
+    }
+  ]
+}

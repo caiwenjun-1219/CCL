@@ -1,0 +1,21 @@
+{
+  "name": "@ccl/campfire-link",
+  "version": "0.1.0",
+  "main": "./src/index.ts",
+  "description": "Cross-platform Minecraft LAN linking compatible with Campfire rooms (EasyTier based)",
+  "license": "GPL-3.0-or-later",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:type": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xmcl/unzip": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,1091 @@
+<script lang="ts" setup>
+import Hint from '@/components/Hint.vue'
+import { useTutorial } from '@/composables/tutorial'
+import { useDateString } from '@/composables/date'
+import { useDialog } from '@/composables/dialog'
+import { kInstance } from '@/composables/instance'
+import { useInstanceContextMenuFunc } from '@/composables/instanceContextMenu'
+import { useInstanceGroup } from '@/composables/instanceGroup'
+import { AddInstanceDialogKey } from '@/composables/instanceTemplates'
+import { kInstances } from '@/composables/instances'
+import { kLaunchButton } from '@/composables/launchButton'
+import { LauncherNews, useLauncherNews } from '@/composables/launcherNews'
+import { useMojangNews } from '@/composables/mojangNews'
+import { useInjectSidebarSettings } from '@/composables/sidebarSettings'
+import { useGamepadInnerNav } from '@/composables/gamepad'
+import { useTextFieldBehavior } from '@/composables/textfieldBehavior'
+import { kTheme } from '@/composables/theme'
+import { vContextMenu } from '@/directives/contextMenu'
+import { vRovingTabindex } from '@/directives/rovingTabindex'
+import { vSharedTooltip } from '@/directives/sharedTooltip'
+import { getInstanceIcon } from '@/util/favicon'
+import { injection } from '@/util/inject'
+import { useFocus, useLocalStorage } from '@vueuse/core'
+import { Instance } from '@xmcl/instance'
+import { Ref, computed, nextTick, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import MeProfilePanel from './MeProfilePanel.vue'
+
+const { t } = useI18n()
+const { isDark } = injection(kTheme)
+const arrowColor = computed(() => (isDark.value ? 'white' : 'black'))
+const { news } = useMojangNews()
+const { news: launcherNews } = useLauncherNews()
+const { getDateString } = useDateString()
+
+const allNews = computed((): LauncherNews[] => {
+  const result: LauncherNews[] = [
+    ...launcherNews.value,
+    ...news.value.map((n) => ({
+      title: n.title,
+      category: n.tag,
+      date: n.date,
+      description: n.text,
+      image: {
+        url: n.newsPageImage.url,
+        width: n.newsPageImage.dimensions.width,
+        height: n.newsPageImage.dimensions.height,
+      },
+      link: n.readMoreLink,
+    })),
+  ]
+  return result.sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+})
+
+const filterKey = ref('')
+const displayNewsHeader = useLocalStorage('displayNewsHeader', true, { writeDefaults: false })
+const { instances } = injection(kInstances)
+const { path } = injection(kInstance)
+const { groups, edit } = useInstanceGroup()
+const { pinnedInstances } = useInjectSidebarSettings()
+
+// View mode: folder, date, or plain
+const instanceViewMode = useLocalStorage<'folder' | 'date' | 'plain'>('instanceViewMode', 'plain')
+
+// Gamepad triggers (L2/R2) switch the instance grouping tab.
+const VIEW_MODES: Array<'folder' | 'date' | 'plain'> = ['folder', 'date', 'plain']
+useGamepadInnerNav({
+  handler: (dir) => {
+    let idx = VIEW_MODES.indexOf(instanceViewMode.value)
+    if (idx === -1) idx = 0
+    idx = dir === 'next'
+      ? (idx + 1) % VIEW_MODES.length
+      : (idx - 1 + VIEW_MODES.length) % VIEW_MODES.length
+    instanceViewMode.value = VIEW_MODES[idx]
+  },
+})
+
+const filteredInstances = computed(() =>
+  [...instances.value]
+    .filter((v) => v.name.toLocaleLowerCase().includes(filterKey.value.toLocaleLowerCase()))
+    .sort((a, b) => b.lastAccessDate - a.lastAccessDate),
+)
+
+// Create a map from instance path to instance
+const instanceMap = computed(() => {
+  const map = new Map<string, Instance>()
+  for (const inst of filteredInstances.value) {
+    map.set(inst.path, inst)
+  }
+  return map
+})
+
+function isImageUrl(val?: string): boolean {
+  if (!val) return false
+  return val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:image/') || val.startsWith('image://')
+}
+
+function isGradient(val?: string): boolean {
+  if (!val) return false
+  return val.includes('gradient')
+}
+
+function getBaseColor(val?: string, fallback = '#10B981'): string {
+  if (!val) return fallback
+  if (!isGradient(val)) return val
+  const match = val.match(/#(?:[0-9a-fA-F]{3,8})|rgba?\([^)]+\)/)
+  // Ні ну....я тут реально їб"вся з цим, бо йобаний ШІ ніх"я не допоміг, лише проблем створив, тому пишу по приколу тут комент
+  return match ? match[0] : fallback
+}
+
+interface GroupedItem {
+  type: 'group'
+  id: string
+  name: string
+  color: string
+  icon?: string
+  instances: Instance[]
+}
+
+// Get grouped instances
+const groupedInstances = computed((): GroupedItem[] => {
+  const result: GroupedItem[] = []
+  for (const item of groups.value) {
+    if (typeof item === 'object') {
+      const groupInstances: Instance[] = []
+      for (const instancePath of item.instances) {
+        const inst = instanceMap.value.get(instancePath)
+        if (inst) {
+          groupInstances.push(inst)
+        }
+      }
+      if (groupInstances.length > 0) {
+        result.push({
+          type: 'group',
+          id: item.id,
+          name: item.name,
+          color: item.color,
+          icon: item.icon,
+          instances: groupInstances,
+        })
+      }
+    }
+  }
+  return result
+})
+
+// Get ungrouped instance paths
+const groupedPaths = computed(() => {
+  const paths = new Set<string>()
+  for (const item of groups.value) {
+    if (typeof item === 'object') {
+      for (const instancePath of item.instances) {
+        paths.add(instancePath)
+      }
+    }
+  }
+  return paths
+})
+
+// Filter to only ungrouped instances
+const ungroupedInstances = computed(() => {
+  return filteredInstances.value.filter((inst) => !groupedPaths.value.has(inst.path))
+})
+
+// Time-based grouping constants
+const now = Date.now()
+const oneDay = 1000 * 60 * 60 * 24
+const threeDays = oneDay * 3
+
+const timeGroupTitles = computed(() => [
+  t('instanceAge.today'),
+  t('instanceAge.threeDay'),
+  t('instanceAge.older'),
+])
+
+// Helper function to group instances by time
+const groupByTime = (instances: Instance[]): Instance[][] => {
+  const todayR: Instance[] = []
+  const threeR: Instance[] = []
+  const other: Instance[] = []
+  for (const p of instances) {
+    const diff = now - p.lastAccessDate
+    if (diff <= oneDay) {
+      todayR.push(p)
+    } else if (diff <= threeDays) {
+      threeR.push(p)
+    } else {
+      other.push(p)
+    }
+  }
+  const result: Instance[][] = []
+  if (todayR.length > 0) result.push(todayR)
+  if (threeR.length > 0) result.push(threeR)
+  if (other.length > 0) result.push(other)
+  return result
+}
+
+const ungroupedByTime: Ref<Instance[][]> = computed(() => groupByTime(ungroupedInstances.value))
+const instancesByTime: Ref<Instance[][]> = computed(() => groupByTime(filteredInstances.value))
+
+// Unified data structure for both view modes
+interface InstanceSection {
+  id: string
+  title: string
+  icon: string
+  color?: string
+  groupId?: string
+  isGroup?: boolean
+  instances: Instance[]
+}
+
+const collapsedGroups = useLocalStorage<Record<string, boolean>>('me:collapsedGroups', {})
+const toggleCollapse = (id: string) => {
+  collapsedGroups.value = {
+    ...collapsedGroups.value,
+    [id]: !collapsedGroups.value[id],
+  }
+}
+const isCollapsed = (id: string) => !!collapsedGroups.value[id]
+
+const { show: showFolderSetting } = useDialog('folder-setting')
+
+function openGroupSetting(section: InstanceSection) {
+  if (!section.groupId) return
+  const id = section.groupId
+  const group = groups.value.find(item => typeof item !== 'string' && item.id === id)
+  if (!group || typeof group === 'string') return
+  showFolderSetting({
+    name: group.name,
+    color: group.color || '',
+    icon: group.icon || '',
+    hasIcon: true,
+    onSave: (saved: { name: string; color: string; icon: string }) => {
+      edit(id, {
+        name: saved.name,
+        color: saved.color,
+        icon: saved.icon,
+      })
+    },
+  })
+}
+
+const instanceSections = computed((): InstanceSection[] => {
+  if (instanceViewMode.value === 'folder') {
+    const sections: InstanceSection[] = []
+
+    // Add manual groups
+    for (const group of groupedInstances.value) {
+      sections.push({
+        id: `group-${group.id}`,
+        groupId: group.id,
+        isGroup: true,
+        title: group.name || t('instances.folder'),
+        icon: group.icon || 'folder',
+        color: group.color,
+        instances: group.instances,
+      })
+    }
+
+    // Add ungrouped instances directly
+    if (ungroupedInstances.value.length > 0) {
+      sections.push({
+        id: 'ungrouped',
+        isGroup: false,
+        title: groupedInstances.value.length > 0 ? (t('bigPicture.ungrouped') || 'Ungrouped') : '',
+        icon: 'grid_view',
+        instances: ungroupedInstances.value,
+      })
+    }
+
+    return sections
+  } else if (instanceViewMode.value === 'date') {
+    // Date view mode - all instances by time
+    const sections: InstanceSection[] = []
+    const timeGroups = instancesByTime.value
+    timeGroups.forEach((timeGroup, i) => {
+      if (timeGroup.length > 0) {
+        sections.push({
+          id: `time-${i}`,
+          title: timeGroupTitles.value[i],
+          icon: 'schedule',
+          instances: timeGroup,
+        })
+      }
+    })
+
+    return sections
+  } else {
+    // Plain view mode - all instances in one list
+    return [
+      {
+        id: 'plain',
+        title: '',
+        icon: 'view_list',
+        instances: filteredInstances.value,
+      },
+    ]
+  }
+})
+
+const { show: openAddInstanceDialog } = useDialog(AddInstanceDialogKey)
+
+const router = useRouter()
+const { onClick: onLaunchClick } = injection(kLaunchButton)
+
+function selectInstance(instancePath: string) {
+  path.value = instancePath
+  if (router.currentRoute.value.path !== '/') {
+    router.push('/')
+  }
+}
+
+async function launchInstance(instancePath: string) {
+  path.value = instancePath
+  await nextTick()
+  await onLaunchClick()
+}
+
+const getInstanceContextMenu = useInstanceContextMenuFunc()
+
+const filter = ref<HTMLElement | null>(null)
+const { focused } = useFocus(filter)
+useTextFieldBehavior(filter, focused)
+
+function openInBrowser(url: string) {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+useTutorial(
+  computed(() => [
+    {
+      element: '.profile-header',
+      popover: {
+        title: t('tutorial.me.profileTitle'),
+        description: t('tutorial.me.profileDescription'),
+      },
+    },
+    {
+      element: '.skin-cape-card',
+      popover: {
+        title: t('tutorial.me.skinTitle'),
+        description: t('tutorial.me.skinDescription'),
+      },
+    },
+    {
+      element: '.instances-section',
+      popover: {
+        title: t('tutorial.me.instancesTitle'),
+        description: t('tutorial.me.instancesDescription'),
+      },
+    },
+  ]),
+)
+</script>
+
+<template>
+  <div class="me-layout flex h-full overflow-hidden">
+    <!-- Left: User Profile Panel -->
+    <MeProfilePanel />
+
+    <!-- Right: News + Instances (unchanged content) -->
+    <div ref="container" class="my-stuff-page h-full flex-grow overflow-auto min-w-0">
+    <div class="classic-container">
+      <!-- News Section (Hero Style) -->
+      <section v-if="true && allNews.length > 0" class="news-section">
+        <div class="section-header">
+          <v-icon class="section-icon" color="primary">article</v-icon>
+          <h2 class="section-title">{{ t('news.name') }}</h2>
+        </div>
+
+        <div class="news-carousel-wrapper">
+          <v-carousel
+            height="280"
+            hide-delimiter-background
+            show-arrows-on-hover
+            cycle
+            :interval="6000"
+            class="news-carousel"
+          >
+            <template #prev="{ props: btnProps }">
+              <v-btn
+                variant="plain"
+                icon="chevron_left"
+                :color="arrowColor"
+                @click="btnProps.onClick"
+              />
+            </template>
+            <template #next="{ props: btnProps }">
+              <v-btn
+                variant="plain"
+                icon="chevron_right"
+                :color="arrowColor"
+                @click="btnProps.onClick"
+              />
+            </template>
+            <v-carousel-item v-for="(item, index) in allNews.slice(0, 8)" :key="index">
+              <div class="news-slide" @click="openInBrowser(item.link)">
+                <div class="news-image-wrapper">
+                  <v-img :src="item.image.url" height="280" cover class="news-image">
+                    <template v-slot:placeholder>
+                      <div class="d-flex align-center justify-center fill-height">
+                        <v-progress-circular indeterminate color="primary"></v-progress-circular>
+                      </div>
+                    </template>
+                  </v-img>
+                  <div class="news-gradient"></div>
+                </div>
+                <div class="news-info">
+                  <div class="news-meta">
+                    <span class="news-category">{{ item.category }}</span>
+                    <span class="news-dot">•</span>
+                    <span class="news-date">{{
+                      getDateString(item.date, { dateStyle: 'medium' })
+                    }}</span>
+                  </div>
+                  <h3 class="news-title">{{ item.title }}</h3>
+                  <p class="news-description">{{ item.description }}</p>
+                  <v-btn color="primary" class="news-read-more" size="small" variant="text">
+                    {{ t('news.readMore') }}
+                    <v-icon end size="small">open_in_new</v-icon>
+                  </v-btn>
+                </div>
+              </div>
+            </v-carousel-item>
+          </v-carousel>
+        </div>
+      </section>
+
+      <!-- Instances Section -->
+      <section class="instances-section">
+        <div class="section-header">
+          <div class="d-flex align-center">
+            <v-icon class="section-icon" color="primary" aria-hidden="true">apps</v-icon>
+            <h2 class="section-title">{{ t('instance.current', 2) }}</h2>
+          </div>
+          <div v-if="instances.length > 0" class="d-flex align-center gap-2">
+            <v-btn-toggle
+              v-roving-tabindex
+              v-model="instanceViewMode"
+              density="compact"
+              mandatory
+              class="mr-2"
+              :aria-label="t('me.instanceViewMode')"
+            >
+              <v-btn
+                v-shared-tooltip="() => t('me.groupByFolder')"
+                value="folder"
+                size="small"
+              >
+                <v-icon size="small" aria-hidden="true">folder</v-icon>
+              </v-btn>
+              <v-btn
+                v-shared-tooltip="() => t('me.groupByDate')"
+                value="date"
+                size="small"
+              >
+                <v-icon size="small" aria-hidden="true">schedule</v-icon>
+              </v-btn>
+              <v-btn
+                v-shared-tooltip="() => t('me.listView')"
+                value=""
+                size="small"
+              >
+                <v-icon size="small" aria-hidden="true">view_list</v-icon>
+              </v-btn>
+            </v-btn-toggle>
+            <v-btn color="primary" @click="openAddInstanceDialog" size="small">
+              <v-icon start size="small" aria-hidden="true">add</v-icon>
+              {{ t('instances.add') }}
+            </v-btn>
+          </div>
+        </div>
+
+        <v-text-field
+          v-if="instances.length > 0"
+          ref="filter"
+          v-model="filterKey"
+          :placeholder="t('shared.filter')"
+          prepend-inner-icon="search"
+          variant="outlined"
+          density="compact"
+          hide-details
+          class="search-field mb-4"
+        />
+
+        <Hint
+          v-if="instances.length === 0"
+          icon="sports_esports"
+          :text="t('instances.addDescription')"
+          class="instances-empty"
+        >
+          <v-btn
+            color="primary"
+            variant="flat"
+            prepend-icon="add"
+            size="small"
+            class="mt-2"
+            @click="openAddInstanceDialog"
+          >
+            {{ t('instances.add') }}
+          </v-btn>
+        </Hint>
+
+        <!-- Unified Instance Sections -->
+        <div
+          v-for="section in instanceSections"
+          :key="section.id"
+          class="mb-6 me-folder-section"
+          :class="{ 'me-folder-section--collapsed': isCollapsed(section.id) }"
+          role="region"
+          :aria-label="section.title || t('instance.name', 2)"
+        >
+          <!-- Special Folder Header when in Folder Mode -->
+          <div
+            v-if="section.isGroup"
+            class="me-folder-header"
+            :style="{
+              '--folder-color': getBaseColor(section.color),
+              '--folder-bg': section.color || 'rgba(255, 255, 255, 0.04)',
+            }"
+            :data-gradient="isGradient(section.color)"
+            @click="toggleCollapse(section.id)"
+          >
+            <!-- Left side: icon, name, count -->
+            <div class="me-folder-header__left">
+              <div
+                class="me-folder-icon-box"
+                :style="{
+                  background: isGradient(section.color) ? section.color : (section.color ? section.color : 'rgba(255, 255, 255, 0.1)'),
+                  boxShadow: section.color ? `0 4px 14px ${getBaseColor(section.color)}50` : 'none',
+                }"
+              >
+                <img
+                  v-if="isImageUrl(section.icon)"
+                  :src="section.icon"
+                  class="w-full h-full object-cover"
+                >
+                <v-icon
+                  v-else
+                  :size="20"
+                  color="white"
+                  class="me-folder-header-icon"
+                >
+                  {{ section.icon || 'folder' }}
+                </v-icon>
+              </div>
+
+              <div class="me-folder-title-wrap">
+                <span class="me-folder-title truncate">{{ section.title }}</span>
+                <span class="me-folder-count">{{ section.instances.length }}</span>
+              </div>
+            </div>
+
+            <!-- Right side: settings & collapse chevron -->
+            <div class="me-folder-header__actions" @click.stop>
+              <v-btn
+                icon
+                size="small"
+                variant="text"
+                class="me-folder-action-btn"
+                :title="t('instances.folderSetting')"
+                @click="openGroupSetting(section)"
+              >
+                <v-icon size="18">settings</v-icon>
+              </v-btn>
+              <v-btn
+                icon
+                size="small"
+                variant="text"
+                class="me-folder-action-btn me-folder-chevron"
+                :class="{ 'me-folder-chevron--collapsed': isCollapsed(section.id) }"
+                :aria-label="section.title"
+                :aria-expanded="!isCollapsed(section.id)"
+                @click="toggleCollapse(section.id)"
+              >
+                <v-icon size="20">expand_more</v-icon>
+              </v-btn>
+            </div>
+          </div>
+
+          <!-- Regular Section Header (for Date view or Ungrouped) -->
+          <div v-else-if="section.title" class="section-header-item mb-3">
+            <v-icon size="small" class="mr-2" aria-hidden="true">{{ section.icon }}</v-icon>
+            <span class="section-title-item">{{ section.title }}</span>
+            <span class="section-count">({{ section.instances.length }})</span>
+          </div>
+
+          <!-- Instances Grid -->
+          <v-expand-transition>
+            <div
+              v-show="!section.isGroup || !isCollapsed(section.id)"
+              v-roving-tabindex
+              role="group"
+              :aria-label="section.title || t('instance.name', 2)"
+              class="instances-grid"
+            >
+              <div
+                v-for="instance in section.instances"
+                :key="instance.path"
+                v-context-menu="getInstanceContextMenu(instance)"
+                class="instance-item surface-card-row"
+                :class="{ 'instance-item--active': instance.path === path }"
+                role="button"
+                tabindex="0"
+                :aria-label="`${instance.name} (Minecraft ${instance.runtime.minecraft})`"
+                :aria-pressed="instance.path === path"
+                @click="selectInstance(instance.path)"
+                @keydown.enter.prevent="selectInstance(instance.path)"
+                @keydown.space.prevent="selectInstance(instance.path)"
+              >
+                <div class="instance-avatar-wrapper">
+                  <v-avatar size="44" class="instance-avatar">
+                    <v-img :src="getInstanceIcon(instance, undefined)" />
+                  </v-avatar>
+                  <div v-if="pinnedInstances.includes(instance.path)" class="pin-badge">
+                    <v-icon size="x-small" color="white" class="text-[8px]" aria-hidden="true">push_pin</v-icon>
+                  </div>
+                </div>
+                <div class="instance-info">
+                  <div class="instance-name">{{ instance.name }}</div>
+                  <div class="instance-version">{{ instance.runtime.minecraft }}</div>
+                </div>
+                <v-btn
+                  v-shared-tooltip="() => t('launch.launch')"
+                  class="instance-play-button"
+                  color="primary"
+                  variant="text"
+                  size="small"
+                  icon="play_arrow"
+                  :aria-label="t('launch.launch')"
+                  @click.stop="launchInstance(instance.path)"
+                />
+              </div>
+            </div>
+          </v-expand-transition>
+        </div>
+      </section>
+    </div>
+  </div>
+  </div>
+</template>
+
+<style scoped>
+.my-stuff-page {
+  background: transparent;
+}
+
+.classic-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.section-icon {
+  margin-right: 12px;
+}
+
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+  color: rgba(0, 0, 0, 0.9);
+}
+
+.dark .section-title {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.news-section {
+  user-select: none;
+  width: 100%;
+}
+
+.news-carousel-wrapper {
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.news-carousel {
+  border-radius: 16px;
+}
+
+.news-slide {
+  position: relative;
+  height: 100%;
+  cursor: pointer;
+  display: flex;
+  transition: transform 0.3s ease;
+}
+
+.news-slide:hover {
+  transform: scale(1.01);
+}
+
+.news-image-wrapper {
+  position: relative;
+  width: 55%;
+  flex-shrink: 0;
+}
+
+.news-image {
+  height: 100%;
+}
+
+.news-gradient {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 100px;
+  background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.9));
+}
+
+.dark .news-gradient {
+  background: linear-gradient(to right, transparent, rgba(30, 30, 30, 1));
+}
+
+.news-info {
+  flex: 1;
+  padding: 24px 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.dark .news-info {
+  background: rgba(30, 30, 30, 0.95);
+}
+
+.news-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.news-category {
+  color: var(--v-primary-base);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.news-dot {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+.dark .news-dot {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.news-date {
+  color: rgba(0, 0, 0, 0.5);
+  font-size: 0.75rem;
+}
+
+.dark .news-date {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.news-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 1);
+  margin: 0 0 12px 0;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dark .news-title {
+  color: white;
+}
+
+.news-description {
+  color: rgba(0, 0, 0, 0.7);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 16px 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dark .news-description {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.news-read-more {
+  align-self: flex-start;
+}
+
+.instances-section {
+  width: 100%;
+  user-select: none;
+}
+
+.instances-empty {
+  min-height: 180px;
+}
+
+.search-field {
+  max-width: 400px;
+  border-radius: 8px;
+}
+
+.group-header,
+.time-header {
+  display: flex;
+  align-items: center;
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.dark .group-header,
+.dark .time-header {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.group-title,
+.time-title {
+  font-size: 1rem;
+}
+
+.group-count {
+  margin-left: 8px;
+  font-size: 0.875rem;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.dark .group-count {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.instances-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+/* Mirrors the .v-list-item language: 10px radius, neutral hover bg,
+   no lift/shadow. Lives outside the Vuetify list machinery (custom
+   avatar + info layout) so the rules are duplicated here, but the
+   radius pulls from the same token (--card-item-radius). */
+.instance-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  /* radius / border / cursor / transition / hover come from .surface-card-row */
+}
+
+.instance-item--active {
+  box-shadow: 0 0 0 2px rgb(var(--v-theme-primary));
+}
+
+.instance-play-button {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.instance-avatar-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pin-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 14px;
+  height: 14px;
+  background-color: #eab308;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+.section-header-item {
+  display: flex;
+  align-items: center;
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.dark .section-header-item {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.section-title-item {
+  font-size: 1rem;
+}
+
+.section-count {
+  margin-left: 8px;
+  font-size: 0.875rem;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.dark .section-count {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.dark .sectionnce-name {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.instance-version {
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.dark .instance-version {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* My Stuff Folder Header & Section */
+.me-folder-section {
+  transition: all 0.25s ease;
+}
+
+.me-folder-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--folder-color) 12%, rgba(255, 255, 255, 0.025));
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.me-folder-header:hover {
+  background: color-mix(in srgb, var(--folder-color) 20%, rgba(255, 255, 255, 0.05));
+  border-color: color-mix(in srgb, var(--folder-color) 40%, rgba(255, 255, 255, 0.2));
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--folder-color) 20%, transparent);
+}
+
+.me-folder-header[data-gradient="true"] {
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--folder-color) 22%, transparent) 0%, rgba(255, 255, 255, 0.02) 100%);
+  border-color: color-mix(in srgb, var(--folder-color) 40%, rgba(255, 255, 255, 0.12));
+}
+
+.me-folder-header[data-gradient="true"]:hover {
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--folder-color) 32%, transparent) 0%, rgba(255, 255, 255, 0.05) 100%);
+}
+
+.me-folder-header__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.me-folder-icon-box {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.me-folder-header:hover .me-folder-icon-box {
+  transform: scale(1.06);
+}
+
+.me-folder-header-icon {
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+}
+
+.me-folder-header-icon :deep(img) {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)) brightness(1.2) contrast(1.1);
+}
+
+.me-folder-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.me-folder-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: rgb(var(--v-theme-on-surface));
+  letter-spacing: 0.01em;
+}
+
+.me-folder-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.me-folder-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.me-folder-action-btn {
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.me-folder-action-btn:hover {
+  color: rgb(var(--v-theme-on-surface));
+  background-color: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.me-folder-chevron {
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.me-folder-chevron--collapsed {
+  transform: rotate(-90deg);
+}
+
+@media (max-width: 768px) {
+  .classic-container {
+    padding: 16px;
+    gap: 24px;
+  }
+
+  .news-slide {
+    flex-direction: column;
+  }
+
+  .news-image-wrapper {
+    width: 100%;
+    height: 160px;
+  }
+
+  .news-gradient {
+    display: none;
+  }
+
+  .news-info {
+    padding: 16px;
+  }
+
+  .news-title {
+    font-size: 1.2rem;
+  }
+
+  .instances-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
