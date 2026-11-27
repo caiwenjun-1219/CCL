@@ -229,15 +229,15 @@ async function start() {
   const targets = platformArg === 'linux'
     ? Platform.LINUX.createTarget(
         linuxTargetsArg ? linuxTargetsArg.split(',').map((t) => t.trim()).filter(Boolean) : undefined,
-        archs,
+        ...(archs ?? []),
       )
     : platformArg === 'mac'
       // 显式只打 dmg：不传 targets 时 electron-builder 会按默认目标追加 zip，
       // 而 zip 在 CI 上会因为 app 目录里的符号链接/并发读而失败（exit 18）。
-      ? Platform.MAC.createTarget(['dmg'], archs)
-      : platformArg === 'win'
-        ? Platform.WINDOWS.createTarget(undefined, archs)
-        : undefined
+      ? Platform.MAC.createTarget(['dmg'], ...(archs ?? []))
+      // Windows 的目标列表由 electron-builder.config.ts 按 CCL_NSIS 决定；这里再 createTarget
+      // 一次会把同一个 nsis 目标排两遍 —— 打包两轮，7za 第二轮回 "The file exists" 直接失败。
+      : undefined
   await buildElectron(config, dir, targets)
   process.exit(0)
 }
