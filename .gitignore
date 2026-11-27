@@ -53,3 +53,7 @@ diag_single/
 
 # 真机联调时从 MuMu 拉下来的 MC 数据（~1 GB）
 .tmp-mc/
+
+# 子项目构建产物（根目录的 /dist/ /build/ 收紧了，这里单独补）
+website/dist/
+src-tauri/plugins/ccl-android/android/build/
