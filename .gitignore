@@ -43,3 +43,6 @@ keys/
 # 子项目构建产物（根目录的 /dist/ /build/ 收紧了，这里单独补）
 website/dist/
 desktop/xmcl-electron-app/build/output/
+
+# wrangler 本地状态
+website/.wrangler/
