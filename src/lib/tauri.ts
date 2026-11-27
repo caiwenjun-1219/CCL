@@ -13,8 +13,35 @@ export interface AppSettings {
   java_path: string;
   window_width: number | null;
   window_height: number | null;
-  /** 网络代理："" = 直连；"auto" = 自动读系统代理 */
+  /** 自建 Azure 应用 client_id（留空 = 用官方启动器 client_id） */
+  microsoft_client_id: string;
+  /** Minecraft 文件夹（.minecraft 根），空 = %APPDATA%\.minecraft */
+  game_folder: string;
+  /** 版本隔离策略 0 关闭 / 1 仅模组实例 / 2 仅非正式版 / 3 两者 / 4 全部 */
+  version_isolation: number;
+  /** 自定义文件夹列表，格式「名称>路径」 */
+  custom_folders: string[];
+  /** 网络代理："" = 直连；"auto" = 自动读系统代理；否则 "http://host:port" / "socks5://host:port" */
   proxy: string;
+  /** GitHub 加速前缀（Android JRE 等 Release 资产用）；空 = 自动多源回退 */
+  github_mirror: string;
+}
+
+/** 可选的 Minecraft 文件夹 */
+export interface GameFolder {
+  name: string;
+  location: string;
+  kind: "original" | "custom";
+}
+
+/** 实例的路径信息（PCL CE 风格） */
+export interface InstancePaths {
+  mc_root: string;
+  game_dir: string;
+  instance_folder: string | null;
+  isolation_label: string;
+  isolated: boolean;
+  legacy: boolean;
 }
 
 export interface Instance {
@@ -27,6 +54,48 @@ export interface Instance {
   created_at: string;
   max_memory: number | null;
   game_dir: string;
+  /** 版本设置（对齐 PCL：按实例独立） */
+  min_memory?: number | null;
+  java_path?: string | null;
+  jvm_args?: string | null;
+  game_args?: string | null;
+  window_width?: number | null;
+  window_height?: number | null;
+  fullscreen?: boolean;
+  auto_join_server?: string | null;
+  last_played?: string | null;
+  /** 新布局：在 <.minecraft>\versions\ 下的文件夹名；null = 旧布局 */
+  folder_name?: string | null;
+  /** 版本隔离覆盖：null/-1 跟随全局，1 强制隔离，2 强制不隔离 */
+  version_isolation?: number | null;
+}
+
+/** 存档 */
+export interface SaveInfo {
+  dir_name: string;
+  level_name: string;
+  size: number;
+  mtime: number;
+  /** data:image/png;base64,... */
+  icon: string | null;
+}
+
+/** 资源包 / 光影包 */
+export interface PackInfo {
+  file_name: string;
+  display_name: string;
+  description: string;
+  size: number;
+  mtime: number;
+  enabled: boolean;
+  is_dir: boolean;
+  incompatible: boolean;
+}
+
+export interface LogFile {
+  name: string;
+  size: number;
+  mtime: number;
 }
 
 export interface ModInfo {
@@ -34,6 +103,10 @@ export interface ModInfo {
   enabled: boolean;
   size: number;
   project_name: string;
+  /** jar 内声明的模组名（fabric/quilt/forge/neoforge 元数据） */
+  mod_name?: string | null;
+  mod_version?: string | null;
+  mod_id?: string | null;
 }
 
 export interface JavaInfo {
@@ -44,6 +117,126 @@ export interface JavaInfo {
   managed: boolean;
 }
 
+/** Java 运行环境信息（桌面 / Android 由后端区分） */
+export interface JavaEnv {
+  platform: "desktop" | "android";
+  supported_majors: number[];
+  source: string;
+  is_android_jre: boolean;
+  /** APK 内置的 JRE 主版本（有则该版本首启免下载） */
+  bundled_major: number | null;
+}
+
+/** JVM 冒烟自检结果：验证这台设备能不能把 Java 跑起来 */
+export interface SmokeReport {
+  device_arch: string;
+  java_dir: string;
+  java_bin: string;
+  bin_exists: boolean;
+  bin_exec_bit: boolean;
+  exec_ok: boolean;
+  exec_code: number | null;
+  exec_errno: number | null;
+  exec_error: string | null;
+  exec_output: string;
+  libjvm_path: string;
+  libjvm_exists: boolean;
+  dlopen_ok: boolean;
+  dlopen_error: string;
+  verdict: string;
+}
+
+/**
+ * 内嵌 JVM 实验（M1）结果：在 App 进程内 dlopen libjvm.so 并 JNI_CreateJavaVM。
+ * `vm_ok` 为 true 才说明「同进程跑 JVM」这条路可行。
+ */
+export interface EmbeddedReport {
+  java_dir: string;
+  libjvm_path: string;
+  libjvm_exists: boolean;
+  dlopen_ok: boolean;
+  dlopen_error: string;
+  symbol_ok: boolean;
+  create_rc: number;
+  create_rc_name: string;
+  vm_ok: boolean;
+  java_version: string;
+  java_vm_name: string;
+  java_vm_version: string;
+  os_arch: string;
+  java_home: string;
+  elapsed_ms: number;
+  cached: boolean;
+  verdict: string;
+}
+
+/**
+ * LWJGL 移植层探针（M2）结果。
+ * Pojav 的 natives + fork 版 GLFW classes 能在内嵌 JVM 里加载并初始化，
+ * 才谈得上让 MC 渲染。
+ */
+export interface LwjglReport {
+  dir: string;
+  abi: string;
+  native_count: number;
+  prepare_ms: number;
+  prepared_cached: boolean;
+  vm_ok: boolean;
+  vm_error: string;
+  classpath: string;
+  library_path: string;
+  /** Surface 是否已交给 libpojavexec（M3） */
+  surface_ok: boolean;
+  surface_info: string;
+  probe: string;
+  steps_ok: number;
+  steps_fail: number;
+  verdict: string;
+}
+
+/**
+ * Android 启动计划（M4-b）。
+ *
+ * 只描述「该怎么启动」，不启动。重点是 `entries` 的**顺序**：
+ * fork 版 LWJGL 必须排在最前，官方 `org.lwjgl:*` 已被整体移出 classpath。
+ */
+export interface LaunchPlan {
+  instance_id: string;
+  version_id: string;
+  main_class: string;
+  classpath: string;
+  /** classpath 逐条，按加载顺序 */
+  entries: string[];
+  jvm_args: string[];
+  game_args: string[];
+  game_dir: string;
+  natives_dir: string;
+  assets_dir: string;
+  library_path: string;
+  /** 生成过程中的取舍说明（剔了哪些库、改了哪些参数） */
+  notes: string[];
+  /** 内嵌 JVM 是否还能用这份 classpath 建起来。false 表示要重启 App */
+  vm_ready: boolean;
+}
+
+/**
+ * Android 真正启动游戏（M4-b-2）的结果。
+ *
+ * 注意 `verdict` 里的「已发起」：游戏跑在独立的普通线程里，命令返回时主类
+ * 只是刚被调起，真正的进度要看 `<game_dir>/logs/latest.log`。
+ */
+export interface StartReport {
+  version_id: string;
+  main_class: string;
+  java_home: string;
+  vm_ok: boolean;
+  vm_error: string;
+  surface_ok: boolean;
+  surface_info: string;
+  classpath_entries: number;
+  verdict: string;
+}
+
 export interface Account {
   uuid: string;
   name: string;
@@ -51,9 +244,7 @@ export interface Account {
   refresh_token: string;
   account_type: string;
   expires_at: number;
-}
-
-/**
+}/**
  * Rust 端 `LoginPoll` 枚举的 JSON 形状。
  * 注意：Pending 是单元变体，serde 会序列化成**字符串** "Pending"（不是对象），
  * 所以判断时必须先确认是对象，不能直接用 `"Done" in res`（对字符串用 in 会抛 TypeError）。
@@ -115,6 +306,23 @@ export interface ModHit {
   author: string;
 }
 
+/** 推荐位项目卡片：比 ModHit 多带关注数 / 类型 / 更新时间 / 主题色 */
+export interface ProjectHit {
+  project_id: string;
+  project_type: string;
+  slug: string;
+  title: string;
+  description: string;
+  icon_url: string | null;
+  categories: string[];
+  versions: string[];
+  downloads: number;
+  follows: number;
+  author: string;
+  date_modified: string;
+  color: number | null;
+}
+
 export interface CfModHit {
   id: number;
   name: string;
@@ -163,6 +371,24 @@ export const api = {
   downloadJava: (major: number) => invoke<JavaInfo>("download_java", { major }),
   resolveJava: (mcVersion: string) =>
     invoke<JavaInfo>("resolve_java", { mcVersion }),
+  javaEnv: () => invoke<JavaEnv>("java_env"),
+  /** JVM 冒烟自检：确认这台设备能不能把 Java 跑起来 */
+  javaSmokeTest: () => invoke<SmokeReport>("java_smoke_test"),
+  /** 内嵌 JVM 实验：在 App 进程内建 VM（安卓出画面的前置条件） */
+  javaEmbeddedTest: () => invoke<EmbeddedReport>("java_embedded_test"),
+  /** LWJGL 移植层探针：验证 Pojav 的 natives + fork 版 GLFW 能否在内嵌 JVM 里跑起来 */
+  javaLwjglProbe: () => invoke<LwjglReport>("java_lwjgl_probe"),
+  /** Android 启动计划：算 classpath 顺序 / JVM 参数 / 游戏参数（不启动） */
+  androidLaunchPlan: (instanceId: string) =>
+    invoke<LaunchPlan>("android_launch_plan", { instanceId }),
+  /** Android 真正启动游戏：接 Surface → 建 VM → 在后台线程跑主类 */
+  androidLaunchGame: (instanceId: string) =>
+    invoke<StartReport>("android_launch_game", { instanceId }),
+  // Android 存储权限（MANAGE_EXTERNAL_STORAGE）：检测与申请
+  checkStoragePermission: () =>
+    invoke<{ granted: boolean }>("plugin:ccl-android|check_storage_permission"),
+  requestStoragePermission: () =>
+    invoke<{ granted: boolean }>("plugin:ccl-android|request_storage_permission"),
 
   // Minecraft 版本
   versionManifest: () => invoke<ManifestEntry[]>("mc_version_manifest"),
@@ -172,6 +398,22 @@ export const api = {
     invoke<string[]>("mc_local_versions", { gameDir }),
   installVersion: (gameDir: string, versionId: string) =>
     invoke<string>("mc_install_version", { gameDir, versionId }),
+  /// 下载本体并自动创建同名实例（失败自动回滚实例目录）。
+  /// 可选 loader / loaderVersion：建实例的同时一并安装模组加载器（对齐 PCL）。
+  downloadAsInstance: (
+    versionId: string,
+    name?: string | null,
+    maxMemory?: number | null,
+    loader?: string | null,
+    loaderVersion?: string | null
+  ) =>
+    invoke<Instance>("mc_download_as_instance", {
+      versionId,
+      name: name ?? null,
+      maxMemory: maxMemory ?? null,
+      loader: loader ?? null,
+      loaderVersion: loaderVersion ?? null,
+    }),
   deleteVersion: (gameDir: string, versionId: string) =>
     invoke("mc_delete_version", { gameDir, versionId }),
   loaderVersions: (kind: string, mcVersion: string) =>
@@ -201,12 +443,68 @@ export const api = {
     }),
   updateInstance: (
     id: string,
-    patch: { name?: string; max_memory?: number; installed_version_id?: string; loader_version?: string }
+    patch: {
+      name?: string;
+      max_memory?: number;
+      installed_version_id?: string;
+      loader_version?: string | null;
+      loader?: string;
+      min_memory?: number;
+      java_path?: string;
+      jvm_args?: string;
+      game_args?: string;
+      window_width?: number;
+      window_height?: number;
+      fullscreen?: boolean;
+      auto_join_server?: string;
+      /** 0 跟随全局 / 1 强制隔离 / 2 强制不隔离 */
+      version_isolation?: number;
+    }
   ) => invoke<Instance>("update_instance", { id, patch }),
-  deleteInstance: (id: string) => invoke("delete_instance", { id }),
+  deleteInstance: (id: string, removeFiles = true) =>
+    invoke("delete_instance", { id, removeFiles }),
   openInstanceDir: (id: string) => invoke("open_instance_dir", { id }),
+
+  // ---- PCL CE 风格：游戏目录与版本隔离
+  scanGameFolders: () => invoke<GameFolder[]>("scan_game_folders"),
+  /** 当前 Minecraft 文件夹绝对路径（版本/库/资源都在这里） */
+  getMcFolder: () => invoke<string>("get_mc_folder"),
+  switchGameFolder: (path: string) => invoke<string>("switch_game_folder", { path }),
+  addCustomGameFolder: (name: string, path: string) =>
+    invoke<string[]>("add_custom_game_folder", { name, path }),
+  removeCustomGameFolder: (path: string) =>
+    invoke<string[]>("remove_custom_game_folder", { path }),
+  migrateInstancesToMcFolder: () => invoke<number>("migrate_instances_to_mc_folder"),
+  instancePaths: (id: string) => invoke<InstancePaths>("instance_paths", { id }),
   listScreenshots: (instanceId: string) =>
     invoke<string[]>("list_screenshots", { instanceId }),
+
+  // 实例资源：存档 / 资源包 / 光影 / 日志
+  instanceSize: (instanceId: string) => invoke<number>("instance_size", { instanceId }),
+  openGameSubdir: (instanceId: string, sub: string) =>
+    invoke("open_game_subdir", { instanceId, sub }),
+  listSaves: (instanceId: string) => invoke<SaveInfo[]>("list_saves", { instanceId }),
+  deleteSave: (instanceId: string, dirName: string) =>
+    invoke("delete_save", { instanceId, dirName }),
+  backupSave: (instanceId: string, dirName: string) =>
+    invoke<string>("backup_save", { instanceId, dirName }),
+  listResourcepacks: (instanceId: string) =>
+    invoke<PackInfo[]>("list_resourcepacks", { instanceId }),
+  toggleResourcepack: (instanceId: string, fileName: string, enabled: boolean) =>
+    invoke("toggle_resourcepack", { instanceId, fileName, enabled }),
+  deleteResourcepack: (instanceId: string, fileName: string) =>
+    invoke("delete_resourcepack", { instanceId, fileName }),
+  listShaderpacks: (instanceId: string) =>
+    invoke<PackInfo[]>("list_shaderpacks", { instanceId }),
+  setShaderpack: (instanceId: string, name: string) =>
+    invoke("set_shaderpack", { instanceId, name }),
+  deleteShaderpack: (instanceId: string, fileName: string) =>
+    invoke("delete_shaderpack", { instanceId, fileName }),
+  importPackFile: (instanceId: string, kind: "resourcepack" | "shaderpack", srcPath: string) =>
+    invoke<string>("import_pack_file", { instanceId, kind, srcPath }),
+  listGameLogs: (instanceId: string) => invoke<LogFile[]>("list_game_logs", { instanceId }),
+  readGameLog: (instanceId: string, name: string, tail = 400) =>
+    invoke<string>("read_game_log", { instanceId, name, tail }),
 
   // 模组
   listMods: (instanceId: string) => invoke<ModInfo[]>("list_mods", { instanceId }),
@@ -233,16 +531,17 @@ export const api = {
   removeAccount: (uuid: string) => invoke("remove_account", { uuid }),
   msLoginStart: () =>
     invoke<{
+      mode: string;
+      user_code: string;
+      device_code: string;
+      verification_uri: string;
+      interval: number;
       login_url: string;
-      redirect_uri: string;
       expires_in: number;
     }>("ms_login_start"),
-  msLoginPoll: () => invoke<LoginPollResult>("ms_login_poll"),
-  msLoginExchange: (code: string, redirectUri: string) =>
-    invoke<LoginPollResult>("ms_login_exchange", {
-      code,
-      redirectUri,
-    }),
+  msLoginPoll: (deviceCode: string) =>
+    invoke<LoginPollResult>("ms_login_poll", { deviceCode }),
+  msLoginExchange: (code: string) => invoke<LoginPollResult>("ms_login_exchange", { code }),
   offlineLogin: (name: string) => invoke<Account>("offline_login", { name }),
   refreshAccount: (uuid: string) => invoke<Account>("refresh_account", { uuid }),
 
@@ -257,6 +556,43 @@ export const api = {
     filename: string,
     sha1: string | null
   ) => invoke<string>("modrinth_install", { instanceId, downloadUrl, filename, sha1 }),
+  /** 推荐位：projectType 为 mod / modpack / resourcepack / shader，category 传 Modrinth 分类 slug */
+  modrinthRecommend: (
+    projectType: "mod" | "modpack" | "resourcepack" | "shader" | "datapack",
+    category: string | null,
+    gameVersion: string | null,
+    loader: string | null,
+    index: "downloads" | "follows" | "newest" | "updated" = "downloads",
+    offset = 0,
+    limit = 12
+  ) =>
+    invoke<ProjectHit[]>("modrinth_recommend", {
+      projectType,
+      category,
+      gameVersion,
+      loader,
+      index,
+      offset,
+      limit,
+    }),
+  /** 在线安装整合包：下载 .mrpack 并走完整导入流程 */
+  modrinthInstallModpack: (slug: string, versionId: string | null = null) =>
+    invoke<Instance>("modrinth_install_modpack", { slug, versionId }),
+  /** 在线安装资源包 / 光影包到实例对应目录 */
+  modrinthInstallResource: (
+    instanceId: string,
+    kind: "resourcepack" | "shader",
+    downloadUrl: string,
+    filename: string,
+    sha1: string | null
+  ) =>
+    invoke<string>("modrinth_install_resource", {
+      instanceId,
+      kind,
+      downloadUrl,
+      filename,
+      sha1,
+    }),
   cfSearch: (query: string, gameVersion: string | null, offset = 0) =>
     invoke<CfModHit[]>("cf_search", { query, gameVersion, offset }),
   cfFiles: (modId: number, gameVersion: string | null) =>
@@ -279,7 +615,7 @@ export const api = {
   // 网络代理
   /** 探测到的系统代理地址（无则 null） */
   proxyDetect: () => invoke<string | null>("proxy_detect"),
-  /** 走当前代理配置做一次连通性测试 */
+  /** 走当前代理配置做一次连通性测试，返回耗时与状态描述 */
   proxyTest: (url?: string | null) => invoke<string>("proxy_test", { url: url ?? null }),
 };
 

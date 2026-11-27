@@ -46,15 +46,42 @@ pub struct AppSettings {
     pub window_width: Option<u32>,
     #[serde(default)]
     pub window_height: Option<u32>,
+    /// 自定义微软应用 ID（Azure AD client id）
+    /// 留空 = 使用 Minecraft 官方启动器 client_id（仅支持手动复制授权码）
+    /// 填写自建应用（需勾选"允许公共客户端流"）= 走设备码流，体验最顺
+    #[serde(default)]
+    pub microsoft_client_id: String,
+
+    // ---- PCL CE 风格：游戏目录与版本隔离 ----
+    /// Minecraft 文件夹路径（.minecraft 根），空 = 使用 %APPDATA%\.minecraft
+    #[serde(default)]
+    pub game_folder: String,
+    /// 版本隔离策略（对齐 PCL CE 的 LaunchArgumentIndieV2）：
+    /// 0 关闭 / 1 仅可装模组的实例 / 2 仅非正式版 / 3 两者 / 4 全部（默认）
+    #[serde(default = "default_isolation")]
+    pub version_isolation: u32,
+    /// 自定义 Microsoft 文件夹列表，格式「名称>绝对路径」
+    #[serde(default)]
+    pub custom_folders: Vec<String>,
     /// 网络代理："" = 不使用；"auto" = 自动读系统代理；否则形如
     /// "http://127.0.0.1:7897" 或 "socks5://127.0.0.1:7897"
     #[serde(default = "default_proxy")]
     pub proxy: String,
+    /// GitHub 加速前缀（用于 Android JRE 等 GitHub Release 资产）：
+    /// 留空 = 自动（gh-proxy.com → ghproxy.net → 直连 GitHub）；
+    /// 填写 = 自定义前缀，如 "https://gh-proxy.com/"（会拼在完整 GitHub URL 前）
+    #[serde(default)]
+    pub github_mirror: String,
 }
 
 /// 默认使用「自动」：读取系统代理设置（Clash 等），未开启则等价于直连
 fn default_proxy() -> String {
     "auto".to_string()
+}
+
+/// PCL CE 默认值为 4：隔离所有实例
+fn default_isolation() -> u32 {
+    4
 }
 
 impl Default for AppSettings {
@@ -69,16 +96,56 @@ impl Default for AppSettings {
             java_path: String::new(),
             window_width: None,
             window_height: None,
+            microsoft_client_id: String::new(),
+            game_folder: String::new(),
+            version_isolation: default_isolation(),
+            custom_folders: vec![],
             proxy: default_proxy(),
+            github_mirror: String::new(),
         }
     }
 }
 
-/// 应用数据根目录: %APPDATA%/com.caiwenjun.ccl
+/// 应用数据根目录
+///
+/// - 桌面：%APPDATA%/com.caiwenjun.ccl（或 macOS/Linux 对应目录）
+/// - Android：优先使用共享外部存储的 `/<外部存储根>/CCL`（需要「所有文件访问」权限，
+///   便于用户在文件管理器里直接管理 Java 与游戏）；若权限未授予或创建失败，则退回
+///   应用私有目录（/Android/data/com.caiwenjun.ccl），此时下载仍可用但不可在外部浏览。
 pub fn data_dir(app: &AppHandle) -> PathBuf {
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(ad) = app.path().app_data_dir() {
+            if let Some(root) = shared_external_root(&ad) {
+                let ccl = root.join("CCL");
+                let _ = std::fs::create_dir_all(&ccl);
+                if std::fs::metadata(&ccl).map(|m| m.is_dir()).unwrap_or(false) {
+                    return ccl;
+                }
+            }
+        }
+    }
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Android：从 app_data_dir（.../Android/data/<pkg>/files）推导共享外部存储根（截到 "Android" 之前）
+#[cfg(target_os = "android")]
+fn shared_external_root(app_data: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut root = std::path::PathBuf::new();
+    for comp in app_data.components() {
+        if matches!(comp, Component::Normal(s) if s == "Android") {
+            break;
+        }
+        root.push(comp);
+    }
+    if root.as_os_str().is_empty() {
+        None
+    } else {
+        Some(root)
+    }
 }
 
 pub fn settings_path(app: &AppHandle) -> PathBuf {
@@ -91,6 +158,12 @@ pub fn instances_dir(app: &AppHandle) -> PathBuf {
 
 pub fn java_dir(app: &AppHandle) -> PathBuf {
     data_dir(app).join("java")
+}
+
+/// LWJGL 移植层（natives + fork 版 glfw classes）的解包目录。
+/// 与 `java/` 平级：它是运行时依赖，不属于用户可见的游戏数据。
+pub fn lwjgl_dir(app: &AppHandle) -> PathBuf {
+    data_dir(app).join("lwjgl")
 }
 
 pub fn load(app: &AppHandle) -> AppSettings {

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type AppSettings, type Instance, type Account, type UpdateInfo, type DlProgress } from "../lib/tauri";
+import { isMobile } from "../lib/env";
 
 interface AppState {
   settings: AppSettings;
@@ -10,6 +11,8 @@ interface AppState {
   running: Record<string, boolean>;
   logs: Record<string, string[]>;
   toast: { text: string; kind: "ok" | "bad" } | null;
+  /** PCL 首页左栏选中的实例 */
+  currentInstanceId: string | null;
 
   loadSettings: () => Promise<void>;
   patchSettings: (patch: Partial<AppSettings>) => Promise<void>;
@@ -21,6 +24,7 @@ interface AppState {
   appendLog: (id: string, line: string) => void;
   clearLogs: (id: string) => void;
   showToast: (text: string, kind?: "ok" | "bad") => void;
+  setCurrentInstance: (id: string | null) => void;
 }
 
 const defaultSettings: AppSettings = {
@@ -33,7 +37,12 @@ const defaultSettings: AppSettings = {
   java_path: "",
   window_width: null,
   window_height: null,
+  microsoft_client_id: "",
+  game_folder: "",
+  version_isolation: 4,
+  custom_folders: [],
   proxy: "auto",
+  github_mirror: "",
 };
 
 export const useApp = create<AppState>((set, get) => ({
@@ -45,6 +54,13 @@ export const useApp = create<AppState>((set, get) => ({
   running: {},
   logs: {},
   toast: null,
+  currentInstanceId: localStorage.getItem("ccl-current-instance"),
+
+  setCurrentInstance: (id) => {
+    if (id) localStorage.setItem("ccl-current-instance", id);
+    else localStorage.removeItem("ccl-current-instance");
+    set({ currentInstanceId: id });
+  },
 
   loadSettings: async () => {
     try {
@@ -70,6 +86,8 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   checkUpdate: async () => {
+    // 移动端（Android）不做云控更新检查：更新通道只有 Windows 安装包
+    if (isMobile()) return;
     try {
       const u = await api.checkCloudUpdate();
       set({ update: u });

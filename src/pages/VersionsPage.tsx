@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Download,
@@ -46,7 +46,8 @@ const FILTERS = [{ key: "all", label: "全部" }, ...GROUPS];
 
 export default function VersionsPage() {
   const [params] = useSearchParams();
-  const { instances, loadInstances, showToast } = useApp();
+  const { instances, loadInstances, showToast, settings, setCurrentInstance } = useApp();
+  // 空字符串 = 「新建实例」模式：下载完自动创建同名实例（PCL/HMCL 的下载即独立版本）
   const [instanceId, setInstanceId] = useState(params.get("instance") || "");
   const [manifest, setManifest] = useState<ManifestEntry[]>([]);
   const [manifestLoading, setManifestLoading] = useState(true);
@@ -65,8 +66,8 @@ export default function VersionsPage() {
   const [testPhase, setTestPhase] = useState("");
   const [reports, setReports] = useState<Record<string, VersionTestReport>>({});
 
-  // 加载器安装
-  const [loaderKind, setLoaderKind] = useState("fabric");
+  // 加载器安装（默认原版：新建实例时只装纯净游戏，选了加载器才一并安装）
+  const [loaderKind, setLoaderKind] = useState("vanilla");
   const [loaderVersions, setLoaderVersions] = useState<string[]>([]);
   const [loaderVersion, setLoaderVersion] = useState("");
   const [installingLoader, setInstallingLoader] = useState(false);
@@ -75,10 +76,8 @@ export default function VersionsPage() {
   const [loaderError, setLoaderError] = useState("");
 
   const instance = instances.find((i) => i.id === instanceId);
-
-  useEffect(() => {
-    if (instances.length > 0 && !instanceId) setInstanceId(instances[0].id);
-  }, [instances]);
+  /** 没有选中已有实例 → 下载后自动新建一个 */
+  const autoCreate = !instance;
 
   const loadManifest = () => {
     setManifestLoading(true);
@@ -116,9 +115,17 @@ export default function VersionsPage() {
     };
   }, []);
 
+  /** 版本文件统一装在 Minecraft 文件夹下（PCL CE 布局），与实例文件夹解耦 */
+  const mcRoot = useCallback(async () => {
+    try {
+      return await api.getMcFolder();
+    } catch {
+      return instance?.game_dir || "";
+    }
+  }, [instance?.game_dir]);
+
   const refreshInstalled = async () => {
-    if (!instance) return;
-    setInstalled(await api.localVersions(instance.game_dir));
+    setInstalled(await api.localVersions(await mcRoot()));
   };
 
   useEffect(() => {
@@ -158,18 +165,52 @@ export default function VersionsPage() {
 
   const totalCount = groups.reduce((n, g) => n + g.items.length, 0);
 
-  const install = async (versionId: string) => {
-    if (!instance) return;
-    setDownloading(versionId);
-    setProgress({ phase: "开始下载", done: 0, total: 0 });
+  /** 下载并新建一个独立实例（后端失败会自动回滚实例目录）。
+   * 可选 loader / loaderVersion：随本体一并安装模组加载器（对齐 PCL）。 */
+  const downloadAsNewInstance = async (
+    versionId: string,
+    loaderArg?: string | null,
+    loaderVersionArg?: string | null
+  ) => {
+    setCreatingInstance(true);
+    setProgress({ phase: "创建实例", done: 0, total: 0 });
     try {
-      await api.installVersion(instance.game_dir, versionId);
-      if (instance.installed_version_id !== versionId) {
-        await api.updateInstance(instance.id, { installed_version_id: versionId });
-        loadInstances();
+      const inst = await api.downloadAsInstance(
+        versionId,
+        null,
+        settings.max_memory ?? null,
+        loaderArg ?? null,
+        loaderVersionArg ?? null
+      );
+      await loadInstances();
+      setInstanceId(inst.id); // 切到新实例，接着装加载器 / 看已装版本都直接可用
+      setCurrentInstance(inst.id); // 启动页也跟着切到新实例
+      showToast(`已创建实例「${inst.name}」并完成安装`);
+    } finally {
+      setCreatingInstance(false);
+    }
+  };
+
+  /** 主下载按钮：未选实例时自动建实例（若选了加载器则一并安装），选了实例就装进该实例 */
+  const install = async (versionId: string) => {
+    if (!versionId || downloading) return;
+    setDownloading(versionId);
+    try {
+      if (!instance) {
+        // 自动建实例：原版只装本体；选了加载器则本体 + 加载器一并安装
+        const lk = loaderKind === "vanilla" ? null : loaderKind;
+        const lv = lk ? loaderVersion : null;
+        await downloadAsNewInstance(versionId, lk, lv);
+      } else {
+        setProgress({ phase: "开始下载", done: 0, total: 0 });
+        await api.installVersion(await mcRoot(), versionId);
+        if (instance.installed_version_id !== versionId) {
+          await api.updateInstance(instance.id, { installed_version_id: versionId });
+          loadInstances();
+        }
+        showToast(`${versionId} 安装完成`);
+        refreshInstalled();
       }
-      showToast(`${versionId} 安装完成`);
-      refreshInstalled();
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
@@ -178,25 +219,18 @@ export default function VersionsPage() {
     }
   };
 
-  // PCL 式「装完即一个独立版本」：直接为该版本创建新实例
+  /** 另建实例：即使已经选了目标实例，也强制新开一个（携带当前选中的加载器） */
   const installAsNewInstance = async (versionId: string) => {
-    setCreatingInstance(true);
+    if (downloading) return;
     setDownloading(versionId);
-    setProgress({ phase: "创建实例", done: 0, total: 0 });
     try {
-      const inst = await api.createInstance(versionId, versionId, "vanilla", null, null);
-      setInstanceId(inst.id);
-      setProgress({ phase: "开始下载", done: 0, total: 0 });
-      await api.installVersion(inst.game_dir, versionId);
-      await api.updateInstance(inst.id, { installed_version_id: versionId });
-      loadInstances();
-      showToast(`已创建实例「${versionId}」并完成安装`);
-      refreshInstalled();
+      const lk = loaderKind === "vanilla" ? null : loaderKind;
+      const lv = lk ? loaderVersion : null;
+      await downloadAsNewInstance(versionId, lk, lv);
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
       setDownloading(null);
-      setCreatingInstance(false);
       setProgress(null);
     }
   };
@@ -221,18 +255,24 @@ export default function VersionsPage() {
   };
 
   const installLoader = async () => {
-    if (!instance || !mcVersion || !loaderVersion) return;
+    if (!mcVersion || !loaderVersion) return;
+    if (!instance) {
+      showToast("请先下载游戏本体（会自动创建实例）", "bad");
+      return;
+    }
     setInstallingLoader(true);
     try {
       const cmd =
         loaderKind === "fabric" || loaderKind === "quilt"
-          ? api.installLoader(instance.game_dir, mcVersion, loaderKind, loaderVersion)
-          : api.installForge(instance.game_dir, mcVersion, loaderKind, loaderVersion);
+          ? api.installLoader(await mcRoot(), mcVersion, loaderKind, loaderVersion)
+          : api.installForge(await mcRoot(), mcVersion, loaderKind, loaderVersion);
       const installedId = await cmd;
       await api.updateInstance(instance.id, {
         installed_version_id: installedId,
         loader_version: loaderVersion,
+        loader: loaderKind,
       });
+      loadInstances();
       showToast(`${LOADER_LABEL[loaderKind]} 安装完成：${installedId}`);
       refreshInstalled();
     } catch (e) {
@@ -266,37 +306,21 @@ export default function VersionsPage() {
       .finally(() => setLoadingLoader(false));
   }, [loaderKind, mcVersion]);
 
-  if (instances.length === 0) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-center">
-        <Download size={40} className="text-ccl-muted mb-4" />
-        <h2 className="text-lg font-bold mb-2">还没有游戏实例</h2>
-        <p className="text-[13px] text-ccl-muted mb-6">
-          下载页需要至少一个实例作为安装目标。你也可以直接在右侧选择「安装为新实例」。
-          <br />
-          所有版本均可在此浏览和单独测试，无需实例。
-        </p>
-        <button className="btn btn-primary" onClick={() => (window.location.hash = "#/instances")}>
-          前往创建实例
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="h-full flex flex-col min-h-0">
       {/* 顶部工具栏 */}
       <div className="flex flex-wrap items-center gap-2 mb-3 shrink-0">
-        <h1 className="text-lg font-bold mr-1">下载</h1>
+        <h1 className="pcl-title mr-1">下载</h1>
         <select
-          className="field !w-44"
+          className="field !w-52"
           value={instanceId}
           onChange={(e) => setInstanceId(e.target.value)}
-          title="安装目标实例"
+          title="下载目标"
         >
+          <option value="">＋ 新建实例（自动创建）</option>
           {instances.map((i) => (
             <option key={i.id} value={i.id}>
-              {i.name}
+              安装到「{i.name}」
             </option>
           ))}
         </select>
@@ -330,9 +354,15 @@ export default function VersionsPage() {
         )}
       </div>
 
-      <div className="flex-1 flex gap-4 min-h-0">
+      {instances.length === 0 && (
+        <div className="mb-3 shrink-0 text-[12px] text-ccl-brush2 rounded-[3px] px-3 py-2 bg-ccl-brush8 border border-ccl-brush6">
+          还没有游戏实例 —— 直接下载任意版本即可，安装完成后会自动创建同名实例并可以直接启动。
+        </div>
+      )}
+
+      <div className="ver-split flex-1 flex gap-4 min-h-0">
         {/* 左：PCL 风格分区版本列表（全部版本） */}
-        <div className="w-[320px] shrink-0 card !p-0 overflow-auto min-h-0">
+        <div className="ver-list w-[320px] shrink-0 card !p-0 overflow-auto min-h-0">
           {manifestLoading && (
             <p className="p-4 text-[12px] text-ccl-muted flex items-center gap-2">
               <Loader2 size={12} className="animate-spin" /> 正在获取版本清单…
@@ -363,7 +393,7 @@ export default function VersionsPage() {
                     key={v.id}
                     onClick={() => setSelected(v.id)}
                     className={`w-full text-left px-3 py-1.5 flex items-center gap-2 border-b border-ccl-border/40 text-[12px] transition-colors ${
-                      selected === v.id ? "bg-[#e4f3e4]" : "hover:bg-black/4"
+                      selected === v.id ? "bg-ccl-brush8" : "hover:bg-black/4"
                     }`}
                   >
                     <span className="font-semibold truncate flex-1">{v.id}</span>
@@ -425,7 +455,7 @@ export default function VersionsPage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   className="btn btn-primary"
-                  disabled={!instance || downloading === selectedEntry.id}
+                  disabled={!!downloading}
                   onClick={() => install(selectedEntry.id)}
                 >
                   {downloading === selectedEntry.id ? (
@@ -433,19 +463,21 @@ export default function VersionsPage() {
                   ) : (
                     <Download size={13} />
                   )}
-                  {instance ? `安装到「${instance.name}」` : "请先创建实例"}
+                  {autoCreate ? `下载并创建实例` : `安装到「${instance!.name}」`}
                 </button>
+                {!autoCreate && (
+                  <button
+                    className="btn btn-ghost"
+                    disabled={!!downloading || creatingInstance}
+                    onClick={() => installAsNewInstance(selectedEntry.id)}
+                    title="为该版本另建一个独立实例并安装"
+                  >
+                    <Plus size={13} /> 安装为新实例
+                  </button>
+                )}
                 <button
                   className="btn btn-ghost"
-                  disabled={!!downloading || creatingInstance}
-                  onClick={() => installAsNewInstance(selectedEntry.id)}
-                  title="为该版本单独创建一个实例并安装"
-                >
-                  <Plus size={13} /> 安装为新实例
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  disabled={testing === selectedEntry.id}
+                  disabled={testing === selectedEntry.id || !!downloading}
                   onClick={() => runTest(selectedEntry.id)}
                   title="在隔离临时目录中完整安装并逐项校验，不影响任何实例"
                 >
@@ -457,6 +489,12 @@ export default function VersionsPage() {
                   单独测试
                 </button>
               </div>
+
+              <p className="text-[11px] text-ccl-muted mt-2">
+                {autoCreate
+                  ? `下载完成后会自动创建名为「${selectedEntry.id}」的实例（重名自动加序号），可直接启动。`
+                  : "安装到已有实例会覆盖该实例的启动版本，存档与模组保留。"}
+              </p>
 
               {testing === selectedEntry.id && (
                 <div className="mt-3 text-[12px] text-ccl-muted flex items-center gap-2">
@@ -507,15 +545,22 @@ export default function VersionsPage() {
             </div>
           )}
 
-          {/* 加载器安装（跟随选中版本，PCL 安装选项风格） */}
+          {/* 加载器选择（跟随选中版本）：
+              新建实例时随本体一并安装；装到已有实例时单独安装 */}
           {mcVersion && (
             <div className="card">
-              <h2 className="text-[13px] font-bold mb-3">
-                为 {mcVersion} 安装模组加载器
-                {instance ? `（安装到「${instance.name}」）` : "（请先选择实例）"}
+              <h2 className="text-[13px] font-bold mb-1.5">
+                {instance
+                  ? `为 ${mcVersion} 安装模组加载器（安装到「${instance.name}」）`
+                  : `为 ${mcVersion} 选择模组加载器`}
               </h2>
+              <p className="text-[12px] text-ccl-muted mb-3">
+                {instance
+                  ? "选择加载器与版本后点「安装」，安装到当前实例。"
+                  : "选择加载器与版本后，上方「下载并创建实例」会一并安装游戏本体与加载器（如 PCL）；选「原版」则只装纯净游戏。"}
+              </p>
               <div className="flex flex-wrap items-center gap-2">
-                {["fabric", "quilt", "neoforge", "forge"].map((k) => (
+                {["vanilla", "fabric", "quilt", "neoforge", "forge"].map((k) => (
                   <button
                     key={k}
                     className={`btn !py-1.5 !px-3 ${
@@ -523,7 +568,7 @@ export default function VersionsPage() {
                     }`}
                     onClick={() => setLoaderKind(k)}
                   >
-                    {LOADER_LABEL[k]}
+                    {k === "vanilla" ? "原版" : LOADER_LABEL[k]}
                   </button>
                 ))}
                 {loadingLoader ? (
@@ -536,7 +581,7 @@ export default function VersionsPage() {
                     className="field !w-44"
                     value={loaderVersion}
                     onChange={(e) => setLoaderVersion(e.target.value)}
-                    disabled={loaderVersions.length === 0}
+                    disabled={loaderVersions.length === 0 || loaderKind === "vanilla"}
                   >
                     {loaderVersions.map((v) => (
                       <option key={v} value={v}>
@@ -545,18 +590,20 @@ export default function VersionsPage() {
                     ))}
                   </select>
                 )}
-                <button
-                  className="btn btn-primary"
-                  disabled={installingLoader || !loaderVersion || !instance}
-                  onClick={installLoader}
-                >
-                  {installingLoader ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <Download size={13} />
-                  )}
-                  安装
-                </button>
+                {instance && (
+                  <button
+                    className="btn btn-primary"
+                    disabled={installingLoader || !loaderVersion}
+                    onClick={installLoader}
+                  >
+                    {installingLoader ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Download size={13} />
+                    )}
+                    安装
+                  </button>
+                )}
                 {!loadingLoader && loaderError && (
                   <span className="text-[12px] text-ccl-warn">{loaderError}</span>
                 )}
@@ -569,12 +616,12 @@ export default function VersionsPage() {
             </div>
           )}
 
-          {/* 已安装版本 */}
+          {/* 已安装版本（仅针对选中的已有实例） */}
+          {instance && (
           <div className="card">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-[13px] font-bold">
-                已安装版本（{installed.length}）
-                {instance ? ` · ${instance.name}` : ""}
+                已安装版本（{installed.length}） · {instance.name}
               </h2>
               <button className="btn btn-ghost !py-1 !px-3" onClick={refreshInstalled}>
                 <RefreshCw size={12} /> 刷新
@@ -587,7 +634,7 @@ export default function VersionsPage() {
                 {installed.map((v) => (
                   <span
                     key={v}
-                    className="inline-flex items-center gap-2 tag tag-green !py-1.5 !px-3"
+                    className="inline-flex items-center gap-2 whitespace-nowrap shrink-0 tag tag-green !py-1.5 !px-3"
                   >
                     {v}
                     {v === instance?.installed_version_id && <Check size={11} />}
@@ -595,7 +642,7 @@ export default function VersionsPage() {
                       className="text-ccl-muted hover:text-red-400"
                       onClick={async () => {
                         if (!confirm(`删除版本 ${v}？`)) return;
-                        await api.deleteVersion(instance!.game_dir, v);
+                        await api.deleteVersion(await mcRoot(), v);
                         refreshInstalled();
                       }}
                     >
@@ -606,6 +653,7 @@ export default function VersionsPage() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
     </div>

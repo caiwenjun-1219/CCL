@@ -49,7 +49,26 @@ struct Arguments {
     jvm: Vec<Value>,
 }
 
-/// rules 判定（Windows x64，无自定义分辨率/演示模式）
+/// 规则判定用的 OS 名。
+///
+/// MC 的 `rules[].os.name` 只有 `windows` / `osx` / `linux` 三种取值。
+/// **Android 必须报 `linux`**（Pojav 也这么做）：报成别的会让所有带
+/// `os` 条件的条目被整体判掉 —— 包括 `natives-*` 分类器与一部分 jvm 参数。
+/// 桌面端行为不变（Windows 仍是 `windows`，顺带修了 macOS 之前误报 windows 的问题）。
+pub(crate) fn rule_os_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "osx"
+    } else {
+        "linux"
+    }
+}
+
+/// classpath 分隔符：Windows 是 `;`，其余（含 Android）是 `:`。
+pub(crate) const CLASSPATH_SEP: char = if cfg!(windows) { ';' } else { ':' };
+
+/// rules 判定（按当前平台，无自定义分辨率/演示模式）
 fn rule_allows(value: &Value) -> bool {
     match value.get("rules") {
         None => true,
@@ -61,7 +80,7 @@ fn rule_allows(value: &Value) -> bool {
                 let action = rule.get("action").and_then(|a| a.as_str()).unwrap_or("allow");
                 let os_match = rule
                     .get("os")
-                    .map(|os| os.get("name").and_then(|n| n.as_str()) == Some("windows"))
+                    .map(|os| os.get("name").and_then(|n| n.as_str()) == Some(rule_os_name()))
                     .unwrap_or(true);
                 let features_ok = rule
                     .get("features")
@@ -78,7 +97,7 @@ fn rule_allows(value: &Value) -> bool {
 }
 
 /// 从 argument 条目提取字符串列表（支持 "str" 与 {rules, value: [...]}）
-fn arg_strings(value: &Value) -> Vec<String> {
+pub(crate) fn arg_strings(value: &Value) -> Vec<String> {
     if !rule_allows(value) {
         return vec![];
     }
@@ -99,15 +118,70 @@ fn arg_strings(value: &Value) -> Vec<String> {
     }
 }
 
-/// 组装 classpath：版本 jar + 所有允许的 libraries
-fn build_classpath(game_dir: &PathBuf, version_id: &str, vjson: &Value) -> String {
-    let mut paths: Vec<String> = vec![];
+/// fork jar 已覆盖、必须从 classpath 里移出的官方 LWJGL 模块（Maven `group:artifact`）。
+///
+/// 与 Pojav 的 `lwjgl-classes.jar` 实际内容一一对应：
+/// `opengl` / `system` / `util` / `glfw` / `openal` / `stb` / `nanovg`。
+/// 这些官方 jar 绑的是桌面 natives（`libglfw.so` / `libGL.so`），留在
+/// classpath 里迟早会有人先加载它们。
+///
+/// **刻意不在这里的两个**：`lwjgl-freetype` 与 `lwjgl-tinyfd` —— fork jar 里
+/// 没有它们的类，得继续用官方 jar；native 由我们提供的 `libfreetype.so` /
+/// `liblwjgl_tinyfd.so` 顶上（库名恰好对得上）。
+const REPLACED_LWJGL: &[&str] = &[
+    "org.lwjgl:lwjgl",
+    "org.lwjgl:lwjgl-glfw",
+    "org.lwjgl:lwjgl-opengl",
+    "org.lwjgl:lwjgl-openal",
+    "org.lwjgl:lwjgl-stb",
+    "org.lwjgl:lwjgl-nanovg",
+];
+
+/// 判断某个 Maven 坐标是否属于「被 fork 覆盖」的模块。
+///
+/// 只看 `group:artifact` 两段，`natives-linux` 之类的 classifier 不影响判断
+/// （那些本来就只含 `.so`，但一起剔掉更省心）。
+pub(crate) fn is_replaced_lwjgl(name: &str) -> bool {
+    let mut it = name.split(':');
+    match (it.next(), it.next()) {
+        (Some(g), Some(a)) => {
+            let ga = format!("{g}:{a}");
+            REPLACED_LWJGL.contains(&ga.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// 收集 classpath 条目：版本 jar + 所有允许的 libraries。
+///
+/// `skip` 收到 Maven 坐标（`group:artifact:version[:classifier]`）并返回是否跳过。
+/// Android 用它剔除官方的 `org.lwjgl:*` —— 那些 jar 里绑的是桌面 natives，
+/// 必须让位给 Pojav 的 fork 版 fat jar，否则 `glfwInit` 会去找 `libglfw.so`。
+pub(crate) fn collect_classpath_entries(
+    game_dir: &PathBuf,
+    version_id: &str,
+    mc_version: &str,
+    vjson: &Value,
+    skip: &dyn Fn(&str) -> bool,
+) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = vec![];
+    // 加载器实例的原版 client jar 落在父版本目录（versions/<mc>/<mc>.jar），
+    // 合并安装时不会复制到 loader 目录，但启动必须带上，否则找不到 net.minecraft.*
+    if version_id != mc_version {
+        let parent_jar = game_dir
+            .join("versions")
+            .join(mc_version)
+            .join(format!("{mc_version}.jar"));
+        if parent_jar.exists() {
+            paths.push(parent_jar);
+        }
+    }
     let version_jar = game_dir
         .join("versions")
         .join(version_id)
         .join(format!("{version_id}.jar"));
     if version_jar.exists() {
-        paths.push(version_jar.to_string_lossy().to_string());
+        paths.push(version_jar);
     }
     if let Some(Value::Array(libs)) = vjson.get("libraries") {
         for lib in libs {
@@ -115,6 +189,9 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, vjson: &Value) -> Strin
                 continue;
             }
             let name = lib.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if skip(name) {
+                continue;
+            }
             // 新格式 natives（org.lwjgl:lwjgl:3.3.3:natives-windows）只含 dll，不进 classpath
             let name_suffix = name.split(':').last().unwrap_or("");
             if name_suffix.starts_with("natives-") {
@@ -139,10 +216,29 @@ fn build_classpath(game_dir: &PathBuf, version_id: &str, vjson: &Value) -> Strin
                     }
                 }
             };
-            paths.push(path.to_string_lossy().to_string());
+            paths.push(path);
         }
     }
-    paths.join(";")
+    paths
+}
+
+/// 组装 classpath（桌面路径，原样全收）
+fn build_classpath(game_dir: &PathBuf, version_id: &str, mc_version: &str, vjson: &Value) -> String {
+    join_classpath(&collect_classpath_entries(
+        game_dir, version_id, mc_version, vjson, &|_| false,
+    ))
+}
+
+/// 把条目按平台分隔符拼成 classpath 字符串。
+///
+/// 之前写死 `;` 在桌面上没问题，但 Android 上 java 会把整串当成一个文件名，
+/// 表现为 `Could not find or load main class net.minecraft.client.main.Main`。
+pub(crate) fn join_classpath(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(&CLASSPATH_SEP.to_string())
 }
 
 fn maven_path_from_name(name: &str) -> PathBuf {
@@ -159,7 +255,7 @@ fn maven_path_from_name(name: &str) -> PathBuf {
     PathBuf::from(format!("{group}/{artifact}/{version}/{file}"))
 }
 
-fn substitute(arg: &str, vars: &HashMap<String, String>) -> String {
+pub(crate) fn substitute(arg: &str, vars: &HashMap<String, String>) -> String {
     let mut out = arg.to_string();
     for (k, v) in vars {
         out = out.replace(&format!("${{{k}}}"), v);
@@ -172,6 +268,37 @@ pub struct LaunchInfo {
     pub instance_id: String,
     pub version_id: String,
     pub java_major: u32,
+}
+
+/// 读取原版（父）版本 JSON 作为启动参数模板；本地没有就从版本清单拉一份并缓存。
+/// 用于修复早期安装的加载器实例缺失原版启动参数（--username 等）的问题。
+/// 缓存放 CCL 数据目录而不是 versions/，避免被当成「已安装版本」。
+async fn ensure_parent_version_json(
+    app: &AppHandle,
+    mc_version: &str,
+) -> Option<Value> {
+    let cache_dir = crate::settings::data_dir(app).join("vanilla-json");
+    let cache = cache_dir.join(format!("{mc_version}.json"));
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            return Some(v);
+        }
+    }
+    let manifest = crate::minecraft::mc_version_manifest(app.clone()).await.ok()?;
+    let entry = manifest.into_iter().find(|e| e.id == mc_version)?;
+    let client = crate::downloader::http_client();
+    let resp = client
+        .get(&entry.url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .ok()?;
+    let v: Value = resp.json().await.ok()?;
+    let _ = std::fs::create_dir_all(&cache_dir);
+    if let Ok(text) = serde_json::to_string(&v) {
+        let _ = std::fs::write(&cache, text);
+    }
+    Some(v)
 }
 
 /// 启动实例
@@ -240,25 +367,23 @@ pub async fn launch_instance(
         account
     };
 
-    let java_info = if !s.java_path.is_empty() {
-        java::JavaInfo {
-            path: s.java_path.clone(),
-            major: java::required_java_major(&instance.minecraft_version),
-            version: String::new(),
-            vendor: "手动指定".into(),
-            managed: false,
-        }
-    } else {
-        java::auto_select_java(&app, &instance.minecraft_version)?
-    };
+    // Java 选择推迟到读完版本 JSON 之后，才能按 JSON 里声明的 javaVersion 精确匹配
+    let instance_java = instance
+        .java_path
+        .as_ref()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
 
-    let game_dir = PathBuf::from(&instance.game_dir);
+    // MC 根：versions / libraries / assets 都在这里（新布局恒为 .minecraft）
+    let mc_root = crate::paths::mc_root(&app, &instance);
+    // --gameDir：由版本隔离策略决定（PCL CE 的 PathIndie）
+    let game_dir = crate::paths::resolve_game_dir(&app, &instance);
     let version_id = instance
         .installed_version_id
         .clone()
         .unwrap_or_else(|| instance.minecraft_version.clone());
 
-    let vjson_path = game_dir
+    let vjson_path = mc_root
         .join("versions")
         .join(&version_id)
         .join(format!("{version_id}.json"));
@@ -269,12 +394,84 @@ pub async fn launch_instance(
     let vjson: Value = serde_json::from_str(&vjson_text).map_err(|e| e.to_string())?;
     let parsed: VersionJson = serde_json::from_value(vjson.clone()).map_err(|e| e.to_string())?;
 
-    let classpath = build_classpath(&game_dir, &version_id, &vjson);
+    // Java 选择优先级：实例指定 → 全局指定 → 自动。
+    // 需要的主版本优先取版本 JSON 的 javaVersion.majorVersion（最准，PCL 也这么做），
+    // 缺失时才按 MC 版本号推断（26.x 这类新命名靠推断会翻车）。
+    let need_java = vjson
+        .get("javaVersion")
+        .and_then(|j| j.get("majorVersion"))
+        .and_then(|m| m.as_u64())
+        .map(|m| m as u32)
+        .unwrap_or_else(|| java::required_java_major(&instance.minecraft_version));
+    let java_info = if let Some(path) = instance_java {
+        java::JavaInfo {
+            path,
+            major: need_java,
+            version: String::new(),
+            vendor: "实例指定".into(),
+            managed: false,
+        }
+    } else if !s.java_path.is_empty() {
+        java::JavaInfo {
+            path: s.java_path.clone(),
+            major: need_java,
+            version: String::new(),
+            vendor: "手动指定".into(),
+            managed: false,
+        }
+    } else {
+        java::auto_select_java_with(&app, need_java, &instance.minecraft_version)?
+    };
+
+    // 兼容旧版合并缺陷：早期安装的加载器版本 JSON 只保留了 loader 自己的 arguments，
+    // 原版的 game 参数（--username / --gameDir / --assetsDir 等）被整体覆盖丢失。
+    // 这里若发现 game 参数为空，就从同实例下的原版版本 JSON 补回一份。
+    let mut base_args: Option<(Vec<Value>, Vec<Value>)> = None;
+    let game_args_empty = vjson
+        .pointer("/arguments/game")
+        .and_then(|g| g.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(false);
+    if game_args_empty && version_id != instance.minecraft_version {
+        // 父版本 JSON 可能没被装上（早期整合包导入只装了 loader 版本），必要时补拉一份
+        let parent = ensure_parent_version_json(&app, &instance.minecraft_version).await;
+        if let Some(pv) = parent {
+            let g = pv
+                .pointer("/arguments/game")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let j = pv
+                .pointer("/arguments/jvm")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if !g.is_empty() {
+                base_args = Some((g, j));
+            }
+        }
+    }
+
+    // 加载器实例必须先有原版本体（client jar），否则一定启动失败
+    if version_id != instance.minecraft_version {
+        let parent_jar = mc_root
+            .join("versions")
+            .join(&instance.minecraft_version)
+            .join(format!("{}.jar", instance.minecraft_version));
+        if !parent_jar.exists() {
+            return Err(format!(
+                "缺少游戏本体：{} 的客户端 jar 不存在。请在「下载 → 游戏本体」重新下载该版本",
+                instance.minecraft_version
+            ));
+        }
+    }
+
+    let classpath = build_classpath(&mc_root, &version_id, &instance.minecraft_version, &vjson);
     if classpath.is_empty() {
         return Err("classpath 为空，版本可能未完整安装".into());
     }
-    let natives_dir = game_dir.join("versions").join(&version_id).join("natives");
-    let assets_root = game_dir.join("assets");
+    let natives_dir = mc_root.join("versions").join(&version_id).join("natives");
+    let assets_root = mc_root.join("assets");
     let asset_index_name = parsed
         .asset_index
         .as_ref()
@@ -296,12 +493,15 @@ pub async fn launch_instance(
     vars.insert("classpath".into(), classpath.clone());
     vars.insert("version".into(), version_id.clone());
     vars.insert("version_name".into(), version_id.clone());
-    // 初始窗口尺寸：取启动器窗口尺寸，失败则回退 854x480
-    let (rw, rh) = app
-        .get_webview_window("main")
-        .and_then(|w| w.inner_size().ok())
-        .map(|s| (s.width.to_string(), s.height.to_string()))
-        .unwrap_or_else(|| ("854".into(), "480".into()));
+    // 初始窗口尺寸：实例设置优先，否则取启动器窗口尺寸，失败则回退 854x480
+    let (rw, rh) = match (instance.window_width, instance.window_height) {
+        (Some(w), Some(h)) if w >= 320 && h >= 240 => (w.to_string(), h.to_string()),
+        _ => app
+            .get_webview_window("main")
+            .and_then(|w| w.inner_size().ok())
+            .map(|s| (s.width.to_string(), s.height.to_string()))
+            .unwrap_or_else(|| ("854".into(), "480".into())),
+    };
     vars.insert("resolution_width".into(), rw);
     vars.insert("resolution_height".into(), rh);
     vars.insert("clientid".into(), "ccl-client".into());
@@ -314,11 +514,23 @@ pub async fn launch_instance(
     vars.insert("launcher_name".into(), "CwjCraftLauncher".into());
     vars.insert("launcher_version".into(), env!("CARGO_PKG_VERSION").into());
 
-    // ---- JVM 参数
+    // ---- JVM 参数（实例设置 > 全局设置）
     let memory = instance.max_memory.unwrap_or(s.max_memory);
-    let mut jvm_args: Vec<String> = vec![format!("-Xmx{memory}M")];
-    if !s.jvm_args.trim().is_empty() {
-        for part in s.jvm_args.split_whitespace() {
+    let mut jvm_args: Vec<String> = Vec::new();
+    if let Some(min) = instance.min_memory {
+        if min > 0 {
+            jvm_args.push(format!("-Xms{min}M"));
+        }
+    }
+    jvm_args.push(format!("-Xmx{memory}M"));
+    let extra_jvm = instance
+        .jvm_args
+        .as_deref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| s.jvm_args.trim());
+    if !extra_jvm.is_empty() {
+        for part in extra_jvm.split_whitespace() {
             jvm_args.push(part.to_string());
         }
     }
@@ -326,17 +538,28 @@ pub async fn launch_instance(
         "-Djava.library.path={}",
         natives_dir.to_string_lossy()
     ));
+    if let Some((_, base_jvm)) = &base_args {
+        for a in base_jvm {
+            jvm_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
+        }
+    }
     if let Some(args) = &parsed.arguments {
         for a in &args.jvm {
             jvm_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
         }
-    } else {
+    }
+    if base_args.is_none() && parsed.arguments.is_none() {
         jvm_args.push("-cp".into());
         jvm_args.push(classpath.clone());
     }
 
     // ---- 游戏参数
     let mut game_args: Vec<String> = vec![];
+    if let Some((base_game, _)) = &base_args {
+        for a in base_game {
+            game_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
+        }
+    }
     if let Some(args) = &parsed.arguments {
         for a in &args.game {
             game_args.extend(arg_strings(a).into_iter().map(|s| substitute(&s, &vars)));
@@ -344,6 +567,47 @@ pub async fn launch_instance(
     } else if let Some(legacy) = &parsed.minecraft_arguments {
         for part in legacy.split(' ') {
             game_args.push(substitute(part, &vars));
+        }
+    }
+
+    // ---- 实例级游戏参数追加（附加参数 → 全屏 → 自动进服）
+    if let Some(extra) = instance.game_args.as_deref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        for part in extra.split_whitespace() {
+            game_args.push(substitute(part, &vars));
+        }
+    }
+    if instance.fullscreen {
+        game_args.push("--fullscreen".into());
+    }
+    if let Some(addr) = instance
+        .auto_join_server
+        .as_deref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        // 1.20 起 --server/--port 被移除，改用 --quickPlayMultiplayer
+        // 注意版本号有两种命名：1.21.11（major=1）与 26.2（major=26），都不能只看第二段
+        let modern = {
+            let mut it = instance.minecraft_version.split('.');
+            let major: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+            if major > 1 {
+                true
+            } else {
+                it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) >= 20
+            }
+        };
+        if modern {
+            game_args.push("--quickPlayMultiplayer".into());
+            game_args.push(addr.to_string());
+        } else {
+            let (host, port) = match addr.rsplit_once(':') {
+                Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, p),
+                _ => (addr, "25565"),
+            };
+            game_args.push("--server".into());
+            game_args.push(host.to_string());
+            game_args.push("--port".into());
+            game_args.push(port.to_string());
         }
     }
 
@@ -366,6 +630,20 @@ pub async fn launch_instance(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // Android：JRE 的 `bin/java` 动态依赖 `lib/libjli.so`，而 Android 的 linker
+    // 不按 rpath 搜索，必须显式给 LD_LIBRARY_PATH，否则 exec 成功但立刻退出，
+    // 报 `CANNOT LINK EXECUTABLE ... library "libjli.so" not found`。
+    #[cfg(target_os = "android")]
+    {
+        let java_path = std::path::Path::new(&java_info.path);
+        if let Some(root) = java_path.parent().and_then(|p| p.parent()) {
+            let lib = root.join("lib");
+            let server = lib.join("server");
+            let ld = format!("{}:{}", lib.display(), server.display());
+            cmd.env("LD_LIBRARY_PATH", ld);
+        }
+    }
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -377,7 +655,7 @@ pub async fn launch_instance(
 
     // 启动诊断日志：完整命令行 + 退出码，便于排查启动失败
     {
-        let dbg_log = game_dir.join("ccl-launch.log");
+        let dbg_log = mc_root.join("ccl-launch.log");
         let mut line = format!(
             "[{}] java={} cwd={}\n  {}\n",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
@@ -414,8 +692,22 @@ pub async fn launch_instance(
     if let Some(err) = child.stderr.take() {
         let iid = instance_id.clone();
         let app_err = app.clone();
+        let err_log = mc_root.join("ccl-launch.log");
         std::thread::spawn(move || {
+            // 前若干行同时落盘，启动失败时可直接看 ccl-launch.log 定位原因
+            let mut logged = 0;
             for line in BufReader::new(err).lines().map_while(Result::ok) {
+                if logged < 40 {
+                    logged += 1;
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&err_log)
+                    {
+                        let _ = writeln!(f, "[stderr] {line}");
+                    }
+                }
                 let _ = app_err.emit(
                     "game-log",
                     GameLogEvent { instance_id: iid.clone(), line },
@@ -461,7 +753,7 @@ pub async fn launch_instance(
                 let _ = dir;
             }
             if let Ok(inst) = crate::instances::get_instance(&app_exit, &iid3) {
-                let dbg_log = std::path::Path::new(&inst.game_dir).join("ccl-launch.log");
+                let dbg_log = crate::paths::mc_root(&app_exit, &inst).join("ccl-launch.log");
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&dbg_log) {
                     let _ = writeln!(
                         f,
@@ -475,6 +767,13 @@ pub async fn launch_instance(
     });
 
     processes.0.lock().unwrap().insert(instance_id.clone(), child);
+
+    // 记录最近游玩时间（主页按此排序）
+    {
+        let mut updated = instance.clone();
+        updated.last_played = Some(chrono::Utc::now().to_rfc3339());
+        let _ = crate::instances::save_instance(&app, &updated);
+    }
 
     Ok(LaunchInfo {
         instance_id,
@@ -526,4 +825,66 @@ fn make_offline_account(app: &AppHandle) -> Account {
     auth::offline_login(app.clone(), name)
         .or_else(|_| auth::offline_login(app.clone(), "Steve".to_string()))
         .expect("创建离线账户失败")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn replaced_lwjgl_matches_group_and_artifact_only() {
+        assert!(is_replaced_lwjgl("org.lwjgl:lwjgl:3.3.3"));
+        assert!(is_replaced_lwjgl("org.lwjgl:lwjgl-glfw:3.3.3:natives-linux"));
+        assert!(is_replaced_lwjgl("org.lwjgl:lwjgl-opengl:3.3.3"));
+
+        // 这两个 fork jar 里没有对应类，必须继续用官方 jar
+        assert!(!is_replaced_lwjgl("org.lwjgl:lwjgl-freetype:3.3.3"));
+        assert!(!is_replaced_lwjgl("org.lwjgl:lwjgl-tinyfd:3.3.3"));
+
+        // 前缀相近的其它坐标不能被误伤
+        assert!(!is_replaced_lwjgl("org.lwjgl.lwjgl:lwjgl:2.9.3"));
+        assert!(!is_replaced_lwjgl("com.mojang:brigadier:1.0.18"));
+        assert!(!is_replaced_lwjgl(""));
+    }
+
+    #[test]
+    fn classpath_skips_replaced_modules_but_keeps_freetype() {
+        let root = std::env::temp_dir().join(format!("ccl-cp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lib = root.join("libraries");
+        let mk = |path: &str| {
+            let p = lib.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+            p
+        };
+        let core = mk("org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar");
+        let glfw = mk("org/lwjgl/lwjgl-glfw/3.3.3/lwjgl-glfw-3.3.3.jar");
+        let freetype = mk("org/lwjgl/lwjgl-freetype/3.3.3/lwjgl-freetype-3.3.3.jar");
+        let guava = mk("com/google/guava/guava/32.1.2-jre/guava-32.1.2-jre.jar");
+
+        let vjson = json!({"libraries": [
+            {"name": "org.lwjgl:lwjgl:3.3.3"},
+            {"name": "org.lwjgl:lwjgl-glfw:3.3.3"},
+            {"name": "org.lwjgl:lwjgl-freetype:3.3.3"},
+            {"name": "com.google.guava:guava:32.1.2-jre"}
+        ]});
+
+        let all = collect_classpath_entries(&root, "1.21.11", "1.21.11", &vjson, &|_| false);
+        assert_eq!(all.len(), 4, "不做过滤时四条都应在");
+
+        let kept = collect_classpath_entries(&root, "1.21.11", "1.21.11", &vjson, &is_replaced_lwjgl);
+        assert_eq!(kept, vec![freetype, guava], "只留 freetype 与 guava");
+        assert!(!kept.contains(&core) && !kept.contains(&glfw));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn classpath_joins_with_platform_separator() {
+        let cp = join_classpath(&[PathBuf::from("/a/b.jar"), PathBuf::from("/c/d.jar")]);
+        let sep = CLASSPATH_SEP.to_string();
+        assert_eq!(cp, format!("/a/b.jar{sep}/c/d.jar"));
+    }
 }

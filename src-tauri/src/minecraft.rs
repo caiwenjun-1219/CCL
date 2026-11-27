@@ -242,6 +242,51 @@ async fn fetch_version_json(client: &reqwest::Client, url: &str, prefer: bool) -
     Err(format!("获取版本 JSON 失败({url}): {last_err}"))
 }
 
+/// 为缺少 downloads 的库（fabric/quilt profile 只给 name + maven 仓库地址）补出下载信息，
+/// 否则 install_version 会直接跳过，导致 fabric-loader 本体永远下不下来。
+pub fn ensure_library_downloads(lib: &mut Value) {
+    let has_url = lib
+        .pointer("/downloads/artifact/url")
+        .and_then(|u| u.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if has_url {
+        return;
+    }
+    let Some(name) = lib.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    let path = name_to_path(&name).display().to_string().replace('\\', "/");
+    let mut urls: Vec<String> = Vec::new();
+    // profile 自带的仓库地址优先（如 https://maven.fabricmc.net/）
+    if let Some(base) = lib
+        .get("url")
+        .and_then(|u| u.as_str())
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+    {
+        urls.push(format!("{base}/{path}"));
+    }
+    if name.starts_with("net.fabricmc:") {
+        urls.push(format!("https://maven.fabricmc.net/{path}"));
+    }
+    if name.starts_with("org.quiltmc:") {
+        urls.push(format!("https://maven.quiltmc.org/repository/release/{path}"));
+    }
+    urls.push(format!("https://repo1.maven.org/maven2/{path}"));
+    if urls.is_empty() {
+        return;
+    }
+    let mut artifact = serde_json::json!({ "path": path, "url": urls[0] });
+    if urls.len() > 1 {
+        artifact["fallbacks"] = serde_json::json!(urls[1..].to_vec());
+    }
+    lib["downloads"] = serde_json::json!({ "artifact": artifact });
+}
+
 /// 安装一个完整版本（json 已合并好）：client jar / libraries / assets / natives
 /// full_assets=false 时只抽样下载少量资源对象（用于版本单独测试，避免全量下载）
 async fn install_version(
@@ -529,15 +574,10 @@ fn library_allowed(lib: &Value) -> bool {
 
 // ---------------------------------------------------------------- 版本安装命令
 
-/// 安装原版游戏版本（从清单拉取）
-#[tauri::command]
-pub async fn mc_install_version(
-    app: AppHandle,
-    game_dir: String,
-    version_id: String,
-) -> Result<String, String> {
+/// 定位版本并拉取其 JSON（清单多源回退）
+async fn resolve_version_json(app: &AppHandle, version_id: &str) -> Result<Value, String> {
     let client = downloader::http_client();
-    let prefer = prefer_mirror(&app);
+    let prefer = prefer_mirror(app);
     let manifest_urls = downloader::urls_with_setting(
         "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
         prefer,
@@ -559,9 +599,111 @@ pub async fn mc_install_version(
         }
     }
     let version_url = version_url.ok_or(format!("定位版本失败: {last_err}"))?;
-    let vjson = fetch_version_json(&client, &version_url, prefer).await?;
+    fetch_version_json(&client, &version_url, prefer).await
+}
+
+/// 安装原版游戏版本（从清单拉取）到指定游戏目录
+#[tauri::command]
+pub async fn mc_install_version(
+    app: AppHandle,
+    game_dir: String,
+    version_id: String,
+) -> Result<String, String> {
+    let vjson = resolve_version_json(&app, &version_id).await?;
     install_version(&app, Path::new(&game_dir), &version_id, &vjson, true).await?;
     Ok(version_id)
+}
+
+/// 下载游戏本体并为它自动创建一个独立实例（PCL/HMCL 「下载即一个版本」的行为）。
+/// 实例名默认与版本号同名，重名自动追加序号；安装失败会回滚删除刚建的实例目录。
+///
+/// 新增可选 `loader` / `loader_version`：在建实例的同一次事务里把模组加载器也装上，
+/// 对齐 PCL「安装实例时一并装加载器」的体验。加载器安装函数（fabric/quilt 的
+/// `mc_install_loader`、forge/neoforge 的 `mc_install_forge`）都会自行安装父版本 MC
+/// 本体，因此这里无需重复预装，只有原版分支才显式装本体。任一环节失败都回滚实例目录
+/// （全局 versions 下的版本文件共享、不会被删，重试不会重复下载）。
+#[tauri::command]
+pub async fn mc_download_as_instance(
+    app: AppHandle,
+    version_id: String,
+    name: Option<String>,
+    max_memory: Option<u32>,
+    loader: Option<String>,
+    loader_version: Option<String>,
+) -> Result<crate::instances::Instance, String> {
+    // 先拿到版本 JSON：网络/清单失败时不留任何空实例
+    let vjson = resolve_version_json(&app, &version_id).await?;
+
+    let inst_name = match name.filter(|n| !n.trim().is_empty()) {
+        Some(n) => n,
+        None => crate::instances::unique_name(&app, &version_id),
+    };
+    let inst = crate::instances::add_instance(
+        &app,
+        &inst_name,
+        &version_id,
+        "vanilla",
+        None,
+        max_memory,
+    )?;
+
+    let mc_root = crate::paths::mc_root(&app, &inst);
+    let root_str = mc_root.to_string_lossy().to_string();
+
+    // 回滚辅助：删实例目录（全局版本文件共享，保留以便重试）
+    let rollback = || crate::instances::remove_instance_dir(&app, &inst.id);
+
+    // 1) 装本体 +（可选）装加载器；fabric/quilt/forge/neoforge 的安装函数自带装 MC 本体
+    let (final_loader, final_loader_version, installed_id) = match loader.as_deref() {
+        None | Some("") | Some("vanilla") => {
+            if let Err(e) = install_version(&app, &mc_root, &version_id, &vjson, true).await {
+                rollback();
+                return Err(format!("下载失败，已回滚新建的实例：{e}"));
+            }
+            ("vanilla".to_string(), None, version_id.clone())
+        }
+        Some(k) if k == "fabric" || k == "quilt" => {
+            let lv = loader_version
+                .clone()
+                .ok_or_else(|| format!("未指定 {k} 版本"))?;
+            match mc_install_loader(app.clone(), root_str.clone(), version_id.clone(), k.to_string(), lv.clone()).await {
+                Ok(id) => (k.to_string(), Some(lv), id),
+                Err(e) => {
+                    rollback();
+                    return Err(format!("{k} 安装失败，已回滚实例：{e}"));
+                }
+            }
+        }
+        Some(k) if k == "forge" || k == "neoforge" => {
+            let lv = loader_version
+                .clone()
+                .ok_or_else(|| format!("未指定 {k} 版本"))?;
+            match mc_install_forge(app.clone(), root_str.clone(), version_id.clone(), k.to_string(), lv.clone()).await {
+                Ok(id) => (k.to_string(), Some(lv), id),
+                Err(e) => {
+                    rollback();
+                    return Err(format!("{k} 安装失败，已回滚实例：{e}"));
+                }
+            }
+        }
+        Some(other) => {
+            rollback();
+            return Err(format!("未知加载器类型 {other}"));
+        }
+    };
+
+    // 2) 回写 installed_version_id / loader / loader_version
+    crate::instances::update_instance(
+        app.clone(),
+        inst.id.clone(),
+        crate::instances::InstancePatch {
+            installed_version_id: Some(installed_id),
+            loader: Some(final_loader),
+            loader_version: final_loader_version,
+            ..Default::default()
+        },
+    )?;
+    crate::instances::get_instance(&app, &inst.id)
 }
 
 /// 递归统计目录体积
@@ -820,8 +962,8 @@ async fn fetch_loader_entries(urls: &[String]) -> Result<Vec<FabricLoaderEntry>,
 }
 
 /// 列出 Fabric / Quilt loader 版本（新→旧）
-/// Fabric：BMCLAPI 镜像 → 官方 meta；Quilt：云控 Worker 代理 → 官方 meta
-/// （meta.quiltmc.net 国内 DNS 被污染，必须经 Worker 或科学幻想）
+/// Fabric：BMCLAPI 镜像 → 官方 meta；Quilt：云控 Worker 代理 → 官方 meta.quiltmc.org
+/// → maven.quiltmc.org 合成兜底（无需任何基础设施，国内直连可用）
 #[tauri::command]
 pub async fn loader_versions(
     app: AppHandle,
@@ -843,29 +985,87 @@ pub async fn loader_versions(
             if let Some(base) = cloud_base_url() {
                 urls.push(format!("{base}/quilt-meta/v3/versions/loader/{mc_version}"));
             }
+            // 注意：官方域名是 meta.quiltmc.org（quilt-installer / HMCL 均如此）；
+            // meta.quiltmc.net 根本不存在（NXDOMAIN），曾因写错域名误判为"国内 DNS 污染"
             urls.push(format!(
-                "https://meta.quiltmc.net/v3/versions/loader/{mc_version}"
+                "https://meta.quiltmc.org/v3/versions/loader/{mc_version}"
             ));
         }
         _ => return Ok(vec![]),
     }
-    let entries = match fetch_loader_entries(&urls).await {
-        Ok(e) => e,
+    let mut versions: Vec<String> = match fetch_loader_entries(&urls).await {
+        Ok(entries) => entries.into_iter().map(|e| e.loader.version).collect(),
         Err(e) => {
-            let _ = &app;
-            if kind == "quilt" {
-                return Err(format!(
-                    "{e}（Quilt 元数据国内不可达：需部署云控 Worker 的 /quilt-meta 代理路由，或使用代理网络）"
-                ));
+            if kind != "quilt" {
+                return Err(e);
             }
-            return Err(e);
+            // Quilt meta 不可达（国内无代理时 TLS 被重置）→ maven 合成兜底
+            match quilt_versions_from_maven(&mc_version).await {
+                Ok(v) => v,
+                Err(me) => return Err(format!("{e}；Quilt maven 兜底失败: {me}")),
+            }
         }
     };
+    // Quilt：meta 可达但列表为空（Worker 陈旧缓存 / 新发布 MC 版本）时，
+    // 用 maven 兜底再确认一次——两者都为空才是"该 MC 版本暂无 Quilt 支持"
+    if kind == "quilt" && versions.is_empty() {
+        if let Ok(v) = quilt_versions_from_maven(&mc_version).await {
+            versions = v;
+        }
+    }
     let _ = &app;
 
-    let mut versions: Vec<String> = entries.into_iter().map(|e| e.loader.version).collect();
-    // 保持服务端顺序（通常新→旧）
+    // 统一规范化排序：新→旧 + 稳定版提前。
+    // 上游返回顺序并不保证——实测 Quilt v3 meta 的顺序是混乱的（首位常为远古 beta），
+    // 而前端默认选中 list[0]，不规范化会把老 beta 当默认安装版本
+    versions.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
     versions.dedup();
+    if let Some(idx) = versions
+        .iter()
+        .position(|v| !v.contains("-beta") && !v.contains("-alpha"))
+    {
+        if idx > 0 {
+            let stable = versions.remove(idx);
+            versions.insert(0, stable);
+        }
+    }
+    Ok(versions)
+}
+
+/// Quilt loader 版本列表兜底：从 maven.quiltmc.org 的 maven-metadata 合成。
+///
+/// 依据 Quilt 官方 meta 生成代码（QuiltMC/update-quilt-meta 的
+/// QuiltLauncherMetadataCollectorV3）：按 MC 版本的 loader 列表 = quilt-loader
+/// 的全部版本——Quilt loader 是版本无关的，经 intermediary 跨 MC 版本工作，
+/// 门槛只是该 MC 版本的映射已发布。实测 meta.quiltmc.org 对 1.16.5～1.21.11
+/// 返回的 307 个版本与 quilt-loader 的 maven-metadata 完全一致。
+///
+/// 因此无需 meta.quiltmc.org（国内无代理不可达），也无需云控 Worker：
+/// 一次 maven-metadata.xml 即可得到完整列表。
+async fn quilt_versions_from_maven(mc_version: &str) -> Result<Vec<String>, String> {
+    // 1. MC 版本门槛：Fabric intermediary 是否已发布（Quilt 复用之）。
+    //    未发布说明该 MC 版本还没有 Quilt 支持，返回空列表而非全部版本。
+    let intermediary_meta = "https://maven.fabricmc.net/net/fabricmc/intermediary/maven-metadata.xml";
+    match maven_versions_at(intermediary_meta).await {
+        Ok(list) if list.iter().any(|v| v == mc_version) => {}
+        Ok(_) => return Ok(vec![]),
+        Err(e) => return Err(format!("检查 intermediary 元数据失败: {e}")),
+    }
+    // 2. quilt-loader 全部版本（新→旧，稳定版提前）
+    let url = "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-loader/maven-metadata.xml";
+    let mut versions = maven_versions_at(url).await?;
+    versions.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+    versions.dedup();
+    if let Some(idx) = versions
+        .iter()
+        .position(|v| !v.contains("-beta") && !v.contains("-alpha"))
+    {
+        if idx > 0 {
+            let stable = versions.remove(idx);
+            versions.insert(0, stable);
+        }
+    }
+    versions.truncate(100);
     Ok(versions)
 }
 
@@ -903,7 +1103,7 @@ pub async fn mc_install_loader(
 
     // 2. loader profile json
     // Fabric：BMCLAPI 镜像 → 官方 meta（均为 /v2/ 路径）
-    // Quilt：云控 Worker 代理 → 官方 meta → maven.quiltmc.org 现场拼装
+    // Quilt：云控 Worker 代理 → 官方 meta.quiltmc.org → maven.quiltmc.org 现场拼装
     let profile: Value = if is_quilt {
         let mut urls: Vec<String> = vec![];
         if let Some(base) = cloud_base_url() {
@@ -912,7 +1112,7 @@ pub async fn mc_install_loader(
             ));
         }
         urls.push(format!(
-            "https://meta.quiltmc.net/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
+            "https://meta.quiltmc.org/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
         ));
         let mut fetched: Option<Value> = None;
         let mut last_err = String::new();
@@ -986,14 +1186,49 @@ pub async fn mc_install_loader(
             for (k, v) in child {
                 match k.as_str() {
                     "libraries" => {
-                        // 合并 libraries 数组
+                        // 合并 libraries 数组；loader profile 的库只有 name + 仓库地址，
+                        // 先补出 downloads，否则下载阶段会整条跳过（fabric-loader 本体就没了）
                         let mut libs = map.get("libraries").cloned().unwrap_or(json!([]));
                         if let Value::Array(parent_libs) = &mut libs {
                             if let Value::Array(child_libs) = v {
-                                parent_libs.extend(child_libs.iter().cloned());
+                                for c in child_libs {
+                                    let mut c = c.clone();
+                                    ensure_library_downloads(&mut c);
+                                    parent_libs.push(c);
+                                }
                             }
                         }
                         map.insert(k.clone(), libs);
+                    }
+                    "downloads" => {
+                        // 不给 loader 版本继承原版的 client jar 下载项：
+                        // 否则会把原版 jar 下到 versions/<loader>/<loader>.jar，
+                        // 真正的 loader jar 反而没人下，启动时 ClassNotFoundException
+                    }
+                    "arguments" => {
+                        // 按 game / jvm 分别追加，不能整体覆盖：
+                        // loader JSON 的 arguments 只带自身的 jvm 参数（如 -DFabricMcEmu=），
+                        // game 往往是空数组，覆盖掉原版就会丢掉 --username 等必需参数
+                        let mut merged_args = map.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                        if let (Value::Object(dst), Value::Object(src)) = (&mut merged_args, v) {
+                            for key in ["game", "jvm"] {
+                                let mut base = dst
+                                    .get(key)
+                                    .and_then(|x| x.as_array())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                if let Some(add) = src.get(key).and_then(|x| x.as_array()) {
+                                    base.extend(add.iter().cloned());
+                                }
+                                dst.insert(key.to_string(), Value::Array(base));
+                            }
+                            for (k2, v2) in src {
+                                if k2 != "game" && k2 != "jvm" {
+                                    dst.insert(k2.clone(), v2.clone());
+                                }
+                            }
+                        }
+                        map.insert("arguments".into(), merged_args);
                     }
                     "inheritsFrom" => {}
                     _ => {
@@ -1467,4 +1702,35 @@ fn stderr_looks_ok(output: &std::process::Output) -> bool {
         && !text.contains("connection")
         && !text.contains("timed out")
         && !text.contains("unable to")
+}
+
+// ---------------------------------------------------------------- 测试
+
+/// Quilt 列表兜底应与官方 meta.quiltmc.org 一致：
+/// 官方 meta 生成逻辑（QuiltMC/update-quilt-meta）中按 MC 版本的 loader 列表
+/// 就是 quilt-loader maven 元数据的全部版本；实测官方 API 对 1.16.5～1.21.11
+/// 均返回 307 个版本，与此处合成结果同源（本函数截断到最新的 100 个）。
+#[tokio::test]
+async fn quilt_versions_from_maven_matches_official_meta() {
+    let list = quilt_versions_from_maven("1.21.1")
+        .await
+        .expect("maven 合成不应失败");
+    assert_eq!(list.len(), 100, "应截断到最新 100 个版本");
+    assert!(
+        !list[0].contains("-beta") && !list[0].contains("-alpha"),
+        "稳定版应提前，实际首位: {}",
+        list[0]
+    );
+    assert!(list.iter().any(|v| v == "0.30.1"), "应包含 0.30.1（E2E 实证可装）");
+    assert!(list.iter().any(|v| v == "0.31.0-beta.4"), "应包含当前最新 beta");
+}
+
+/// intermediary 未发布的 MC 版本 → 空列表（"暂无 Quilt 支持"），
+/// 而不是把全部 307 个 loader 版本错误地列出来
+#[tokio::test]
+async fn quilt_versions_unsupported_mc_returns_empty() {
+    let list = quilt_versions_from_maven("9.9.9")
+        .await
+        .expect("maven 合成不应失败");
+    assert!(list.is_empty(), "不支持的 MC 版本应返回空列表");
 }

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Trash2, FolderOpen, Puzzle, RefreshCw, Loader2 } from "lucide-react";
+import { Plus, Trash2, FolderOpen, Puzzle, Settings2, Loader2 } from "lucide-react";
 import { useApp } from "../store/app";
-import { api } from "../lib/tauri";
+import { api, onInstallProgress } from "../lib/tauri";
 
 const LOADERS = [
   { id: "vanilla", label: "原版", desc: "纯净游戏，无任何模组加载器" },
@@ -11,6 +11,21 @@ const LOADERS = [
   { id: "neoforge", label: "NeoForge", desc: "Forge 继任者，大型模组包首选" },
   { id: "forge", label: "Forge", desc: "老牌加载器，1.20.2 及以下常用" },
 ];
+
+/** 最近游玩时间 → 相对描述 */
+function relTime(iso: string | null | undefined) {
+  if (!iso) return "从未启动";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 1) return "刚刚";
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} 小时前`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d} 天前`;
+  return new Date(t).toLocaleDateString("zh-CN");
+}
 
 export default function InstancesPage() {
   const navigate = useNavigate();
@@ -35,7 +50,7 @@ export default function InstancesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-5">
-        <h1 className="text-lg font-bold">实例管理</h1>
+        <h1 className="pcl-title">实例管理</h1>
         <button className="btn btn-primary" onClick={() => setCreating(true)}>
           <Plus size={13} /> 新建实例
         </button>
@@ -54,14 +69,19 @@ export default function InstancesPage() {
                 <th className="text-left px-4 py-2.5 font-medium">MC 版本</th>
                 <th className="text-left px-4 py-2.5 font-medium">加载器</th>
                 <th className="text-left px-4 py-2.5 font-medium">内存</th>
+                <th className="text-left px-4 py-2.5 font-medium">最近游玩</th>
                 <th className="text-left px-4 py-2.5 font-medium">状态</th>
                 <th className="text-right px-4 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
               {instances.map((inst) => (
-                <tr key={inst.id} className="border-b border-ccl-border/50 hover:bg-white/3">
-                  <td className="px-4 py-2.5 font-semibold">{inst.name}</td>
+                <tr
+                  key={inst.id}
+                  className="border-b border-ccl-border/50 hover:bg-white/3 cursor-pointer"
+                  onClick={() => navigate(`/instance/${inst.id}`)}
+                >
+                  <td className="px-4 py-2.5 font-semibold text-ccl-accent">{inst.name}</td>
                   <td className="px-4 py-2.5 text-ccl-muted">{inst.minecraft_version}</td>
                   <td className="px-4 py-2.5">
                     <span className="tag">{LOADERS.find((l) => l.id === inst.loader)?.label || inst.loader}</span>
@@ -70,6 +90,7 @@ export default function InstancesPage() {
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-ccl-muted">{inst.max_memory || 4096} MB</td>
+                  <td className="px-4 py-2.5 text-ccl-muted text-[12px]">{relTime(inst.last_played)}</td>
                   <td className="px-4 py-2.5">
                     {inst.loader === "vanilla" || inst.installed_version_id ? (
                       <span className="tag tag-green">就绪</span>
@@ -77,11 +98,18 @@ export default function InstancesPage() {
                       <span className="tag tag-orange">待安装版本</span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <button
                       className="btn btn-ghost !py-1 !px-2.5"
+                      title="版本设置"
+                      onClick={() => navigate(`/instance/${inst.id}?tab=settings`)}
+                    >
+                      <Settings2 size={13} />
+                    </button>
+                    <button
+                      className="btn btn-ghost !py-1 !px-2.5 ml-1"
                       title="模组管理"
-                      onClick={() => navigate(`/mods?instance=${inst.id}`)}
+                      onClick={() => navigate(`/more/mods?instance=${inst.id}`)}
                     >
                       <Puzzle size={13} />
                     </button>
@@ -124,6 +152,15 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
   const [manifest, setManifest] = useState<{ id: string; vtype: string }[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [progress, setProgress] = useState<{ phase: string; done: number; total: number } | null>(
+    null
+  );
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    onInstallProgress((p) => setProgress(p)).then((f) => (un = f));
+    return () => un?.();
+  }, []);
 
   useEffect(() => {
     setLoadingVersions(true);
@@ -157,21 +194,23 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
   const snapshots = manifest.filter((v) => v.vtype !== "release");
 
   const submit = async () => {
+    if (loader !== "vanilla" && !loaderVersion) {
+      showToast("请先选择加载器版本，或改选原版", "bad");
+      return;
+    }
     setSaving(true);
+    setProgress({ phase: "准备安装", done: 0, total: 0 });
     try {
-      await api.createInstance(
-        name,
-        mcVersion,
-        loader,
-        loader === "vanilla" ? null : loaderVersion,
-        memory
-      );
-      showToast("实例已创建，请到版本页安装游戏");
+      const loaderToUse = loader === "vanilla" ? null : loader;
+      const lv = loader === "vanilla" ? null : loaderVersion;
+      await api.downloadAsInstance(mcVersion, name, memory, loaderToUse, lv);
+      showToast(`实例「${name}」已创建并完成安装`);
       onClose();
     } catch (e) {
       showToast(String(e), "bad");
     } finally {
       setSaving(false);
+      setProgress(null);
     }
   };
 
@@ -227,7 +266,7 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                   key={l.id}
                   className={`text-left px-3.5 py-2.5 rounded-lg border transition-colors ${
                     loader === l.id
-                      ? "border-ccl-accent bg-[#e4f3e4]"
+                      ? "border-ccl-accent bg-ccl-brush8"
                       : "border-ccl-border hover:border-ccl-accent/50"
                   }`}
                   onClick={() => setLoader(l.id)}
@@ -272,21 +311,29 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
               <div>版本：<b className="text-ccl-text">{mcVersion}</b></div>
               <div>加载器：<b className="text-ccl-text">{LOADERS.find((l) => l.id === loader)?.label}</b>{loader !== "vanilla" && loaderVersion && ` ${loaderVersion}`}</div>
               <div>内存：<b className="text-ccl-text">{memory} MB</b></div>
+              <div className="mt-1 text-ccl-brush2">提交后将自动下载游戏本体与所选加载器，一步到位（如 PCL）。</div>
             </div>
           </div>
         )}
 
-        <div className="flex justify-between mt-6">
-          <button className="btn btn-ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>
+        {progress && (
+          <div className="mt-5 text-[12px] text-ccl-muted flex items-center gap-2">
+            <Loader2 size={12} className="animate-spin" />
+            {progress.phase}
+            {progress.total > 0 && ` ${Math.floor((progress.done / progress.total) * 100)}%`}
+          </div>
+        )}
+        <div className="flex justify-between mt-3">
+          <button className="btn btn-ghost" disabled={step === 0 || saving} onClick={() => setStep(step - 1)}>
             上一步
           </button>
           {step < 2 ? (
-            <button className="btn btn-primary" onClick={() => setStep(step + 1)}>
+            <button className="btn btn-primary" disabled={saving} onClick={() => setStep(step + 1)}>
               下一步
             </button>
           ) : (
             <button className="btn btn-primary" disabled={saving} onClick={submit}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} 创建
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} 创建并安装
             </button>
           )}
         </div>
