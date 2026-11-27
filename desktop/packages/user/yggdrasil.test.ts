@@ -205,6 +205,33 @@ describe('YggdrasilClient', () => {
         }),
       ).resolves.toBeTruthy()
     })
+    it('should send selectedProfile when binding a character', async () => {
+      const pool = agent.get(API.hostName)
+      pool
+        .intercept({
+          method: 'POST',
+          path: API.refresh,
+          body: JSON.stringify({
+            accessToken: 'accessToken',
+            clientToken,
+            requestUser: true,
+            selectedProfile: { id: 'profile-id', name: 'Steve' },
+          }),
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+          },
+        })
+        .reply(200, '{}')
+      const client = new YggdrasilClient(API.hostName, { fetch })
+      await expect(
+        client.refresh({
+          accessToken: 'accessToken',
+          clientToken,
+          requestUser: true,
+          selectedProfile: { id: 'profile-id', name: 'Steve' },
+        }),
+      ).resolves.toBeTruthy()
+    })
     it('should throw error when refresh with response 400', async () => {
       const pool = agent.get(API.hostName)
       pool

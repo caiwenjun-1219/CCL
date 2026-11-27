@@ -296,8 +296,13 @@ export class UserService extends StatefulService<UserState> implements IUserServ
   }
 
   async selectUserGameProfile(userProfile: UserProfile, gameProfileId: string): Promise<void> {
-    userProfile.selectedProfile = gameProfileId
-    this.state.userProfile(userProfile)
+    const system = await this.resolveAccountSystem(userProfile.authority)
+    // Yggdrasil（LittleSkin 等）换角色需要 refresh 绑定 selectedProfile，否则进服会 401/403
+    const updated = system.selectProfile
+      ? await system.selectProfile(userProfile, gameProfileId)
+      : userProfile
+    updated.selectedProfile = gameProfileId
+    this.state.userProfile(updated)
   }
 
   @Singleton(p => p.id)

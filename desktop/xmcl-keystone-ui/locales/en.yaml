@@ -872,27 +872,35 @@ launcherUpdate:
   noUpdateAvailable: No Update Available
   updateToThisVersion: Download and Install
 littleSkin:
-  name: LittleSkin
-  entry: LittleSkin Login
-  description: Sign in with LittleSkin to sync your skins and capes
+  name: Third-party Login
+  entry: Third-party Login
+  description: LittleSkin / authlib-injector skin server account
+  thirdPartyTitle: Third-party Login
+  thirdPartyDescription: Sign in with LittleSkin or another authlib-injector server
+  server: Authentication server
+  customServer: Custom server
+  serverPlaceholder: https://example.com/api/yggdrasil
+  serverHint: The Yggdrasil API root of the skin server. HTTPS is required.
+  invalidServer: Invalid server URL. It must start with https://
+  requireServer: Select or enter an authentication server
   account: Email or Username
-  accountPlaceholder: Your LittleSkin email or username
+  accountPlaceholder: Your skin server email or username
   password: Password
-  passwordPlaceholder: Your LittleSkin password
+  passwordPlaceholder: Your skin server password
   remember: Remember account
   login: Sign in
   loggingIn: Signing in...
   register: Create account
   forgot: Forgot password
-  website: Open LittleSkin
+  website: Open skin server
   selectTitle: Select a character
-  selectDescription: This account has multiple characters. Pick one to use.
+  selectDescription: This account has multiple characters on {server}. Pick one to use.
   useCharacter: Use this character
   inUse: In use
-  noCharacter: This account has no character yet. Create one on the LittleSkin website first.
+  noCharacter: This account has no character yet. Create one on the skin server website first.
   createCharacter: Create a character
-  requireAccount: Please enter your LittleSkin email or username
-  requirePassword: Please enter your LittleSkin password
+  requireAccount: Please enter your skin server email or username
+  requirePassword: Please enter your skin server password
 cclAccount:
   nav: CCL Account
   title: CCL Account

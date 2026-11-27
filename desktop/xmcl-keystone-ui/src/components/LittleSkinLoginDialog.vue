@@ -16,16 +16,57 @@
           @click="close"
         />
         <div class="flex items-center gap-3.5">
-          <img :src="LITTLESKIN_ICON" class="w-12 h-12 rounded-xl shadow-lg flex-shrink-0" alt="LittleSkin">
+          <img
+            v-if="isLittleSkin"
+            :src="LITTLESKIN_ICON"
+            class="w-12 h-12 rounded-xl shadow-lg flex-shrink-0"
+            alt="LittleSkin"
+          >
+          <div
+            v-else
+            class="w-12 h-12 rounded-xl shadow-lg flex-shrink-0 flex items-center justify-center bg-primary/15 text-primary"
+          >
+            <v-icon size="26">dns</v-icon>
+          </div>
           <div class="min-w-0">
-            <div class="text-lg font-bold tracking-tight leading-tight">{{ t('littleSkin.name') }}</div>
-            <div class="text-xs opacity-65 leading-snug mt-0.5">{{ t('littleSkin.description') }}</div>
+            <div class="text-lg font-bold tracking-tight leading-tight">{{ t('littleSkin.thirdPartyTitle') }}</div>
+            <div class="text-xs opacity-65 leading-snug mt-0.5">{{ t('littleSkin.thirdPartyDescription') }}</div>
           </div>
         </div>
       </div>
 
       <!-- 账号密码登录 -->
       <div v-if="step === 'login'" class="px-6 pt-4 pb-6 flex flex-col gap-3">
+        <v-select
+          v-model="serverChoice"
+          :items="serverOptions"
+          item-title="title"
+          item-value="value"
+          data-testid="littleskin-server"
+          prepend-inner-icon="dns"
+          variant="outlined"
+          density="comfortable"
+          rounded="lg"
+          hide-details="auto"
+          :label="t('littleSkin.server')"
+        />
+
+        <v-text-field
+          v-if="serverChoice === CUSTOM_SERVER"
+          v-model="customServer"
+          data-testid="littleskin-custom-server"
+          prepend-inner-icon="link"
+          variant="outlined"
+          density="comfortable"
+          rounded="lg"
+          hide-details="auto"
+          :label="t('littleSkin.customServer')"
+          :placeholder="t('littleSkin.serverPlaceholder')"
+          :hint="t('littleSkin.serverHint')"
+          persistent-hint
+          @update:model-value="errorMessage = ''"
+        />
+
         <v-text-field
           v-model="username"
           data-testid="littleskin-username"
@@ -90,12 +131,12 @@
           {{ loading ? t('littleSkin.loggingIn') : t('littleSkin.login') }}
         </v-btn>
 
-        <div class="flex items-center justify-center gap-2 text-xs pt-1 flex-wrap">
-          <a :href="LITTLESKIN_REGISTER" target="browser" class="little-skin-link">{{ t('littleSkin.register') }}</a>
+        <div v-if="serverOrigin" class="flex items-center justify-center gap-2 text-xs pt-1 flex-wrap">
+          <a :href="registerUrl" target="browser" class="little-skin-link">{{ t('littleSkin.register') }}</a>
           <span class="opacity-25">·</span>
-          <a :href="LITTLESKIN_FORGOT_PASSWORD" target="browser" class="little-skin-link">{{ t('littleSkin.forgot') }}</a>
+          <a :href="forgotUrl" target="browser" class="little-skin-link">{{ t('littleSkin.forgot') }}</a>
           <span class="opacity-25">·</span>
-          <a :href="LITTLESKIN_HOME" target="browser" class="little-skin-link">{{ t('littleSkin.website') }}</a>
+          <a :href="websiteUrl" target="browser" class="little-skin-link">{{ t('littleSkin.website') }}</a>
         </div>
       </div>
 
@@ -103,7 +144,9 @@
       <div v-else class="px-6 pt-4 pb-6 flex flex-col gap-3">
         <div>
           <div class="text-sm font-bold">{{ t('littleSkin.selectTitle') }}</div>
-          <div class="text-xs opacity-60 mt-0.5">{{ t('littleSkin.selectDescription') }}</div>
+          <div class="text-xs opacity-60 mt-0.5">
+            {{ t('littleSkin.selectDescription', { server: serverHost }) }}
+          </div>
         </div>
 
         <div
@@ -112,7 +155,7 @@
           style="border-color: rgba(var(--v-theme-on-surface), 0.18)"
         >
           <div>{{ t('littleSkin.noCharacter') }}</div>
-          <a :href="LITTLESKIN_HOME" target="browser" class="little-skin-link inline-block mt-2 font-medium">
+          <a :href="websiteUrl" target="browser" class="little-skin-link inline-block mt-2 font-medium">
             {{ t('littleSkin.createCharacter') }}
           </a>
         </div>
@@ -160,11 +203,10 @@
 import PlayerAvatar from '@/components/PlayerAvatar.vue'
 import { useService } from '@/composables'
 import {
+  CUSTOM_SERVER,
   LITTLESKIN_AUTHORITY,
-  LITTLESKIN_FORGOT_PASSWORD,
-  LITTLESKIN_HOME,
   LITTLESKIN_ICON,
-  LITTLESKIN_REGISTER,
+  THIRD_PARTY_PRESETS,
   useLittleSkinLogin,
 } from '@/composables/littleSkin'
 import { kUserContext } from '@/composables/user'
@@ -178,6 +220,7 @@ import {
   UserServiceKey,
   isException,
 } from '@xmcl/runtime-api'
+import { computed, ref, watch } from 'vue'
 
 const { t } = useI18n()
 const { shown, presetUsername, close } = useLittleSkinLogin()
@@ -206,36 +249,102 @@ const showPassword = ref(false)
 
 const remember = useLocalStorage('littleSkinRemember', true)
 const savedUsername = useLocalStorage('littleSkinUsername', '')
+const serverChoice = useLocalStorage('littleSkinServer', LITTLESKIN_AUTHORITY as string)
+const customServer = useLocalStorage('littleSkinCustomServer', '')
+const serverOptions = ref<{ title: string; value: string }[]>([])
 
 const profiles = ref<GameProfileAndTexture[]>([])
 const selectedId = ref('')
 const currentUser = ref<UserProfile>()
 
-let ensuredService = false
+const normalizeAuthority = (url: string) => url.trim().replace(/\/+$/, '')
+
+const authority = computed(() => {
+  const raw = serverChoice.value === CUSTOM_SERVER ? customServer.value : serverChoice.value
+  return normalizeAuthority(raw || '')
+})
+
+const serverHost = computed(() => {
+  try {
+    return new URL(authority.value).host
+  } catch {
+    return ''
+  }
+})
+
+const serverOrigin = computed(() => {
+  try {
+    return new URL(authority.value).origin
+  } catch {
+    return ''
+  }
+})
+
+const preset = computed(() => THIRD_PARTY_PRESETS.find((p) => normalizeAuthority(p.value) === authority.value))
+const isLittleSkin = computed(() => preset.value?.title === 'LittleSkin'
+  || /(^|\.)littleskin\.cn$/i.test(serverHost.value))
+const registerUrl = computed(() => preset.value?.register || serverOrigin.value)
+const forgotUrl = computed(() => preset.value?.forgot || serverOrigin.value)
+const websiteUrl = computed(() => preset.value?.home || serverOrigin.value)
 
 /**
- * 旧版本留下的 yggdrasil.json 里可能没有 LittleSkin。
- * 补注册一次，保证启动时能拿到 authlib-injector 的预置元数据。
+ * 已注册的皮肤站 + 内置预设 + “自定义服务器”。
+ * 与 PCL 的第三方登录服务器下拉一致。
  */
-async function ensureLittleSkinService() {
-  if (ensuredService) return
-  try {
-    const all = await getSupportedAuthorityMetadata()
-    const exists = all.some((a) => {
-      try {
-        return new URL(a.authority).host === 'littleskin.cn'
-      } catch {
-        return false
-      }
-    })
-    if (!exists) {
-      await addYggdrasilService(LITTLESKIN_AUTHORITY)
-      await mutateAuthorities()
-    }
-    ensuredService = true
-  } catch {
-    // 注册失败不阻塞登录，authlib-injector 仍会自行拉取元数据
+async function refreshServerOptions() {
+  const list: { title: string; value: string }[] = []
+  const seen = new Set<string>()
+  const push = (title: string, value: string) => {
+    const key = normalizeAuthority(value)
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    list.push({ title, value: key })
   }
+
+  for (const p of THIRD_PARTY_PRESETS) push(p.title, p.value)
+
+  try {
+    const metas = await getSupportedAuthorityMetadata()
+    for (const meta of metas) {
+      if (meta.kind !== 'yggdrasil') continue
+      try {
+        const host = new URL(meta.authority).host
+        push(host, meta.authority)
+      } catch {
+        // 忽略非法地址
+      }
+    }
+  } catch {
+    // 服务列表拉不到时至少保留内置预设
+  }
+
+  push(t('littleSkin.customServer'), CUSTOM_SERVER)
+  serverOptions.value = list
+
+  const current = normalizeAuthority(serverChoice.value)
+  if (current !== CUSTOM_SERVER && !list.some((o) => o.value === current)) {
+    if (current) {
+      // 之前用过但当前不可用的自定义地址，保留下来让用户能继续用
+      customServer.value = current
+      serverChoice.value = CUSTOM_SERVER
+    } else {
+      serverChoice.value = LITTLESKIN_AUTHORITY
+    }
+  }
+}
+
+/**
+ * 自定义服务器首次登录时先注册到 yggdrasil.json，
+ * 这样启动时 authlib-injector 才能拿到它的元数据。
+ */
+async function ensureService(url: string) {
+  const metas = await getSupportedAuthorityMetadata()
+  const exists = metas.some((m) => m.kind === 'yggdrasil'
+    && normalizeAuthority(m.authority) === url)
+  if (exists) return
+  await addYggdrasilService(url)
+  await mutateAuthorities()
+  await refreshServerOptions()
 }
 
 watch(shown, (visible) => {
@@ -249,8 +358,9 @@ watch(shown, (visible) => {
   selectedId.value = ''
   currentUser.value = undefined
   password.value = ''
-  const existing = users.value.find((u) => u.authority === LITTLESKIN_AUTHORITY)
+  const existing = users.value.find((u) => normalizeAuthority(u.authority) === authority.value)
   username.value = presetUsername.value || existing?.username || savedUsername.value || ''
+  refreshServerOptions()
 })
 
 function toErrorMessage(e: unknown) {
@@ -273,6 +383,15 @@ function toErrorMessage(e: unknown) {
 async function onLogin() {
   if (loading.value) return
   errorMessage.value = ''
+  const url = authority.value
+  if (!url) {
+    errorMessage.value = t('littleSkin.requireServer')
+    return
+  }
+  if (!/^https:\/\/[^\s]+$/i.test(url)) {
+    errorMessage.value = t('littleSkin.invalidServer')
+    return
+  }
   if (!username.value.trim()) {
     errorMessage.value = t('littleSkin.requireAccount')
     return
@@ -284,11 +403,13 @@ async function onLogin() {
 
   loading.value = true
   try {
-    await ensureLittleSkinService()
+    // 自定义地址统一去掉尾部斜杠，避免和注册表里的写法对不上
+    if (serverChoice.value === CUSTOM_SERVER) customServer.value = url
+    await ensureService(url)
     const profile = await login({
       username: username.value.trim(),
       password: password.value,
-      authority: LITTLESKIN_AUTHORITY,
+      authority: url,
     })
     currentUser.value = profile
     if (remember.value) savedUsername.value = username.value.trim()

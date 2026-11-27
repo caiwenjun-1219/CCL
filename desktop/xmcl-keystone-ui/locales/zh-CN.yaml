@@ -872,13 +872,21 @@ launcherUpdate:
   noUpdateAvailable: 目前没有可用更新
   updateToThisVersion: 下载并安装
 littleSkin:
-  name: LittleSkin 皮肤站
-  entry: LittleSkin 登录
-  description: 使用 LittleSkin 账号登录，皮肤与披风自动同步
+  name: 第三方登录
+  entry: 第三方登录
+  description: LittleSkin / authlib-injector 皮肤站账号
+  thirdPartyTitle: 第三方登录
+  thirdPartyDescription: 使用 LittleSkin 或其他 authlib-injector 皮肤站账号
+  server: 认证服务器
+  customServer: 自定义服务器
+  serverPlaceholder: https://example.com/api/yggdrasil
+  serverHint: 填写皮肤站的 Yggdrasil API 根地址，需要 HTTPS
+  invalidServer: 服务器地址无效，需要以 https:// 开头
+  requireServer: 请选择或填写认证服务器
   account: 邮箱或用户名
-  accountPlaceholder: LittleSkin 的邮箱或用户名
+  accountPlaceholder: 皮肤站的邮箱或用户名
   password: 密码
-  passwordPlaceholder: LittleSkin 的登录密码
+  passwordPlaceholder: 皮肤站的登录密码
   remember: 记住账号
   login: 登录
   loggingIn: 正在登录...
@@ -886,13 +894,13 @@ littleSkin:
   forgot: 忘记密码
   website: 打开皮肤站
   selectTitle: 选择角色
-  selectDescription: 该账号下有多个角色，请选择要使用的角色
+  selectDescription: 该账号在 {server} 下有多个角色，请选择要使用的一个
   useCharacter: 使用该角色
   inUse: 使用中
   noCharacter: 该账号还没有角色，请先到皮肤站创建角色
   createCharacter: 去创建角色
-  requireAccount: 请输入 LittleSkin 邮箱或用户名
-  requirePassword: 请输入 LittleSkin 密码
+  requireAccount: 请输入皮肤站邮箱或用户名
+  requirePassword: 请输入皮肤站密码
 cclAccount:
   nav: CCL 账号
   title: CCL 账号

@@ -189,7 +189,14 @@ export class YggdrasilClient {
       accessToken,
       requestUser,
       clientToken,
-    }: { accessToken: string; clientToken: string; requestUser?: boolean },
+      selectedProfile,
+    }: {
+      accessToken: string
+      clientToken: string
+      requestUser?: boolean
+      /** 绑定到指定角色（Yggdrasil 规范：换角色必须带 selectedProfile 刷新） */
+      selectedProfile?: { id: string; name: string }
+    },
     signal?: AbortSignal,
   ) {
     const response = await this.fetch(this.api + '/refresh', {
@@ -198,6 +205,7 @@ export class YggdrasilClient {
         accessToken,
         clientToken,
         requestUser: typeof requestUser === 'boolean' ? requestUser : false,
+        ...(selectedProfile ? { selectedProfile } : {}),
       }),
       headers: {
         ...this.headers,

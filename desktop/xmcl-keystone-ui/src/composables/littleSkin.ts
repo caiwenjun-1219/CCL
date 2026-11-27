@@ -1,13 +1,30 @@
 import { ref } from 'vue'
 
 /**
- * LittleSkin 皮肤站的 Yggdrasil API 地址。
- * 与 PCL 一致，登录时直接作为 authority 使用。
+ * 第三方（authlib-injector / Yggdrasil）登录。
+ *
+ * 与 PCL 的“第三方登录”一致：先选认证服务器（默认 LittleSkin，也可填任意
+ * 兼容 authlib-injector 的皮肤站 API 根地址），再用邮箱/密码走
+ * `/authserver/authenticate`，多角色时由用户选择。
  */
 export const LITTLESKIN_AUTHORITY = 'https://littleskin.cn/api/yggdrasil'
 export const LITTLESKIN_HOME = 'https://littleskin.cn'
 export const LITTLESKIN_REGISTER = 'https://littleskin.cn/auth/register'
 export const LITTLESKIN_FORGOT_PASSWORD = 'https://littleskin.cn/auth/forgot'
+
+/** v-select 里代表“手动填写服务器地址”的哨兵值 */
+export const CUSTOM_SERVER = '__custom__'
+
+/** 内置预设，与 PCL 的第三方登录服务器列表对应 */
+export const THIRD_PARTY_PRESETS = [
+  {
+    title: 'LittleSkin',
+    value: LITTLESKIN_AUTHORITY,
+    home: LITTLESKIN_HOME,
+    register: LITTLESKIN_REGISTER,
+    forgot: LITTLESKIN_FORGOT_PASSWORD,
+  },
+]
 
 /**
  * 内联的小图标，避免离线时依赖皮肤站 favicon。
@@ -26,7 +43,7 @@ const shown = ref(false)
 const presetUsername = ref('')
 
 /**
- * 全局共享的 LittleSkin 登录状态，任何组件都能打开同一个对话框。
+ * 全局共享的登录状态，任何组件都能打开同一个对话框。
  */
 export function useLittleSkinLogin() {
   return {

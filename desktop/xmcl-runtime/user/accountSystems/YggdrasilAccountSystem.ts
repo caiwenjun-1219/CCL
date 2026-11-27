@@ -231,6 +231,46 @@ export class YggdrasilAccountSystem implements UserAccountSystem {
     return userProfile
   }
 
+  /**
+   * 切换角色并重新绑定令牌（PCL 的第三方登录也是这么做的）。
+   *
+   * Yggdrasil 的 accessToken 在 authenticate/refresh 时绑定到 selectedProfile；
+   * 多角色账号只改本地 selectedProfile 而不刷新，进服时 `/sessionserver/join`
+   * 会因令牌与角色不匹配被拒。这里显式带 selectedProfile 调一次 refresh。
+   */
+  async selectProfile(userProfile: UserProfile, gameProfileId: string, signal?: AbortSignal): Promise<UserProfile> {
+    const profile = userProfile.profiles[gameProfileId]
+    if (!profile) {
+      throw new UserException({
+        type: 'fetchMinecraftProfileFailed',
+        errorType: 'NOT_FOUND',
+        error: 'NOT_FOUND',
+        errorMessage: `No profile ${gameProfileId}`,
+        developerMessage: `No profile ${gameProfileId} in ${userProfile.authority}`,
+      })
+    }
+
+    const token = await this.storage.get(userProfile)
+    if (!token) {
+      userProfile.invalidated = true
+      return userProfile
+    }
+
+    const client = this.getClient(userProfile.authority)
+    const result = await client.refresh({
+      accessToken: token,
+      clientToken: this.clientToken,
+      requestUser: true,
+      selectedProfile: { id: profile.id, name: profile.name },
+    }, signal)
+
+    await this.storage.put(userProfile, result.accessToken)
+    userProfile.selectedProfile = gameProfileId
+    userProfile.expiredAt = Date.now() + 86400_000
+    userProfile.invalidated = false
+    return userProfile
+  }
+
   async setSkin(userProfile: UserProfile, gameProfile: GameProfileAndTexture, { cape, skin }: SkinPayload, signal?: AbortSignal): Promise<UserProfile> {
     const client = this.getClient(userProfile.authority)
 
