@@ -5,9 +5,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CCL - Cwj Craft Launcher · 电脑与手机都能玩的 Minecraft 启动器</title>
-<meta name="description" content="CCL（Cwj Craft Launcher）是基于 XMCL 内核重写的免费开源 Minecraft 启动器：全版本与全加载器、Modrinth + CurseForge 双源模组、微软正版与 LittleSkin 登录，自带 CCL 账号与 Campfire 联机，Windows、macOS 与 Android 三端同源。">
+<meta name="description" content="CCL（Cwj Craft Launcher）是基于 XMCL 内核重写的免费开源 Minecraft 启动器：全版本与全加载器、Modrinth + CurseForge 双源模组、微软正版与 LittleSkin 登录，自带 CCL 账号与 Campfire 联机，Windows、macOS、Linux 与 Android 四端同源。">
 <meta property="og:title" content="CCL - Cwj Craft Launcher">
-<meta property="og:description" content="全版本、全加载器、双源模组、CCL 账号与 Campfire 联机，Windows、macOS 与 Android 三端同源。">
+<meta property="og:description" content="全版本、全加载器、双源模组、CCL 账号与 Campfire 联机，Windows、macOS、Linux 与 Android 四端同源。">
 <meta property="og:type" content="website">
 <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23172e36"/><text x="32" y="43" font-family="Arial,sans-serif" font-size="28" font-weight="700" fill="%232fb4d6" text-anchor="middle">C</text></svg>'>
 <style>
@@ -181,7 +181,7 @@ section{padding:76px 0}
 }
 
 /* ===== 平台卡 ===== */
-.platforms{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px}
+.platforms{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:24px}
 .plat{
   background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
   padding:26px;display:flex;gap:18px;transition:.22s;
@@ -232,7 +232,7 @@ section{padding:76px 0}
 .step .hint{display:block;margin-top:10px;font-size:12.5px;color:var(--ink-3)}
 
 /* ===== 下载 ===== */
-.dl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:22px}
+.dl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:22px}
 .dl-card{
   background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
   padding:26px;display:flex;flex-direction:column;transition:.2s;
@@ -336,11 +336,11 @@ footer .f-links a:hover{color:var(--brand)}
   <section class="hero">
     <div class="marquee" aria-hidden="true">
       <div class="marquee-track">
-        <span><b>CCL 2.1.0 已发布</b></span><span>Windows / <b>macOS</b> / <b>Android</b> 三端同源</span><span>自带 <b>CCL 账号</b>，账号就是游戏账号</span><span><b>Campfire</b> 联机 · 房间码一键分享</span><span>Modrinth + CurseForge <b>双源模组</b></span><span>支持 <b>微软正版</b> / LittleSkin / 离线</span>
-        <span><b>CCL 2.1.0 已发布</b></span><span>Windows / <b>macOS</b> / <b>Android</b> 三端同源</span><span>自带 <b>CCL 账号</b>，账号就是游戏账号</span><span><b>Campfire</b> 联机 · 房间码一键分享</span><span>Modrinth + CurseForge <b>双源模组</b></span><span>支持 <b>微软正版</b> / LittleSkin / 离线</span>
+        <span><b>CCL 2.1.0 已发布</b></span><span>Windows / <b>macOS</b> / <b>Linux</b> / <b>Android</b> 四端同源</span><span>自带 <b>CCL 账号</b>，账号就是游戏账号</span><span><b>Campfire</b> 联机 · 房间码一键分享</span><span>Modrinth + CurseForge <b>双源模组</b></span><span>支持 <b>微软正版</b> / LittleSkin / 离线</span>
+        <span><b>CCL 2.1.0 已发布</b></span><span>Windows / <b>macOS</b> / <b>Linux</b> / <b>Android</b> 四端同源</span><span>自带 <b>CCL 账号</b>，账号就是游戏账号</span><span><b>Campfire</b> 联机 · 房间码一键分享</span><span>Modrinth + CurseForge <b>双源模组</b></span><span>支持 <b>微软正版</b> / LittleSkin / 离线</span>
       </div>
     </div>
-    <div class="hero-badge">✦ 免费开源 · 2.1.0 已发布 · Windows / macOS / Android</div>
+    <div class="hero-badge">✦ 免费开源 · 2.1.0 已发布 · Windows / macOS / Linux / Android</div>
 
     <div class="cube-stage" id="cubeStage">
       <div class="cube-float">
@@ -380,7 +380,7 @@ footer .f-links a:hover{color:var(--brand)}
       <a class="btn btn-ghost" href="https://github.com/caiwenjun-1219/CCL" target="_blank" rel="noopener">查看源码</a>
       <a class="btn btn-ghost" href="http://caiwenjuncraftlauncher.free.mbbs.cc" target="_blank" rel="noopener">玩家论坛</a>
     </div>
-    <div class="hero-meta">Windows 10 / 11 · x64 &nbsp;|&nbsp; macOS 11+ · Intel / Apple Silicon &nbsp;|&nbsp; Android 7.0+ · arm64 &nbsp;|&nbsp; <b>无需预装 Java</b></div>
+    <div class="hero-meta">Windows 10 / 11 · x64 &nbsp;|&nbsp; macOS 11+ · Intel / Apple Silicon &nbsp;|&nbsp; Linux · x64 / arm64 &nbsp;|&nbsp; Android 7.0+ · arm64 &nbsp;|&nbsp; <b>无需预装 Java</b></div>
   </section>
 
   <!-- 数据条 -->
@@ -390,7 +390,7 @@ footer .f-links a:hover{color:var(--brand)}
         <div class="stat" style="text-align:center"><b style="display:block;font-size:27px;font-weight:800;color:var(--brand)">900+</b><span style="font-size:13px;color:var(--ink-3)">可下载游戏版本</span></div>
         <div class="stat" style="text-align:center"><b style="display:block;font-size:27px;font-weight:800;color:var(--brand)">5 种</b><span style="font-size:13px;color:var(--ink-3)">模组加载器支持</span></div>
         <div class="stat" style="text-align:center"><b style="display:block;font-size:27px;font-weight:800;color:var(--brand)">2 大</b><span style="font-size:13px;color:var(--ink-3)">模组资源源</span></div>
-        <div class="stat" style="text-align:center"><b style="display:block;font-size:27px;font-weight:800;color:var(--brand)">3 端</b><span style="font-size:13px;color:var(--ink-3)">Windows / macOS / Android</span></div>
+        <div class="stat" style="text-align:center"><b style="display:block;font-size:27px;font-weight:800;color:var(--brand)">4 端</b><span style="font-size:13px;color:var(--ink-3)">Windows / macOS / Linux / Android</span></div>
         <div class="stat" style="text-align:center"><b style="display:block;font-size:27px;font-weight:800;color:var(--brand)">0 配置</b><span style="font-size:13px;color:var(--ink-3)">自动托管 Java</span></div>
       </div>
     </div>
@@ -401,8 +401,8 @@ footer .f-links a:hover{color:var(--brand)}
     <div class="wrap">
       <div class="sec-head reveal">
         <span class="kicker">Platforms</span>
-        <h2>电脑一个，手机一个</h2>
-        <p>同一套账号、同一套设置、同一套房间。桌面端点启动，手机端接着玩。</p>
+        <h2>四端同源，进度跟着账号走</h2>
+        <p>Windows、macOS、Linux 与 Android 共用同一套账号、设置与房间。桌面端点启动，手机端接着玩。</p>
       </div>
       <div class="platforms">
         <div class="plat reveal">
@@ -419,6 +419,14 @@ footer .f-links a:hover{color:var(--brand)}
             <h3>macOS<span class="ver">2.1.0</span></h3>
             <p>macOS 原生构建，与桌面端同源：实例管理、模组市场、账号中心与联机大厅一应俱全。</p>
             <div class="meta">macOS 11+ · Intel / Apple Silicon · dmg 约 130 MB</div>
+          </div>
+        </div>
+        <div class="plat reveal">
+          <div class="plat-ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M6.5 9.5 9 12l-2.5 2.5M11.5 15h5"/></svg></div>
+          <div>
+            <h3>Linux<span class="ver">2.1.0</span></h3>
+            <p>AppImage 与 tar.xz 两种分发，x64 与 arm64 都有；不挑发行版，解压即可运行。</p>
+            <div class="meta">glibc 2.28+ · x64 / arm64 · AppImage 约 130 MB</div>
           </div>
         </div>
         <div class="plat reveal">
@@ -545,7 +553,7 @@ footer .f-links a:hover{color:var(--brand)}
       <div class="sec-head reveal">
         <span class="kicker">Download</span>
         <h2>下载 CCL</h2>
-        <p>Windows 安装包、macOS dmg 与 Android APK 均为当前最新构建，安装前建议核对 SHA-256。</p>
+        <p>Windows 安装包、macOS dmg、Linux 安装包与 Android APK 均为当前最新构建，安装前建议核对 SHA-256。全部走 CCL 加速节点，国内直连即可下载。</p>
       </div>
       <div class="dl-grid">
         <div class="dl-card reco reveal">
@@ -558,7 +566,7 @@ footer .f-links a:hover{color:var(--brand)}
             <li>自动检测并下载 Java，无需预装</li>
           </ul>
           <div class="dl-actions">
-            <a class="mini-btn solid" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-win-x64-setup.exe">⬇ 下载安装包</a>
+            <a class="mini-btn solid" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-win-x64-setup.exe">⬇ 下载安装包</a>
             <a class="mini-btn line" href="https://github.com/caiwenjun-1219/CCL/releases" target="_blank" rel="noopener">全部版本</a>
           </div>
           <div class="sha">SHA-256 b92f3dd64ece9924f8844029d0cab5c637cb908bb41b6e378fc5659f4819031b</div>
@@ -573,10 +581,26 @@ footer .f-links a:hover{color:var(--brand)}
             <li>Apple Silicon 请选 arm64 版</li>
           </ul>
           <div class="dl-actions">
-            <a class="mini-btn solid" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-x64.dmg">⬇ Intel 版</a>
-            <a class="mini-btn line" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-arm64.dmg">⬇ Apple Silicon 版</a>
+            <a class="mini-btn solid" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-x64.dmg">⬇ Intel 版</a>
+            <a class="mini-btn line" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-arm64.dmg">⬇ Apple Silicon 版</a>
           </div>
-          <div class="sha">SHA-256 x64 fd0ade2a238df64b63ace20834eeaf852405445ed1be9b13d3d23d11c21106e6</div>
+          <div class="sha">SHA-256 x64 347e9ad567b142512dde7d9ae7926e93ad13a4ac3d5574a4d5605dd4e43cd8fa</div>
+        </div>
+        <div class="dl-card reveal">
+          <span class="dl-tag">Linux · 新增</span>
+          <h3>CCL 2.1.0</h3>
+          <p class="desc">x64 与 arm64 双架构。AppImage 免安装、赋予执行权限即可运行；tar.xz 解压即用，适合放进任意目录。</p>
+          <ul>
+            <li>glibc 2.28+ · x64 / arm64</li>
+            <li>AppImage 约 130 MB · 未签名</li>
+            <li>tar.xz 解压后运行目录内 <code>ccl</code></li>
+          </ul>
+          <div class="dl-actions">
+            <a class="mini-btn solid" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-x64.AppImage">⬇ AppImage · x64</a>
+            <a class="mini-btn line" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-x64.tar.xz">⬇ tar.xz · x64</a>
+            <a class="mini-btn line" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-arm64.AppImage">⬇ arm64</a>
+          </div>
+          <div class="sha">SHA-256 见同名 .sha256 文件</div>
         </div>
         <div class="dl-card reveal">
           <span class="dl-tag">Android · Beta</span>
@@ -588,14 +612,14 @@ footer .f-links a:hover{color:var(--brand)}
             <li>首次使用需允许安装未知来源应用</li>
           </ul>
           <div class="dl-actions">
-            <a class="mini-btn solid" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-android-arm64.apk">⬇ 下载 APK</a>
+            <a class="mini-btn solid" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-android-arm64.apk">⬇ 下载 APK</a>
             <a class="mini-btn line" href="https://github.com/caiwenjun-1219/CCL/releases" target="_blank" rel="noopener">全部版本</a>
           </div>
           <div class="sha">SHA-256 079a34fb9d506672b1e8c7b49763f9e9c3f2a205078609bb956e1c190d71aa95</div>
         </div>
       </div>
       <p class="reveal" style="text-align:center;margin-top:22px;font-size:13.5px;color:var(--ink-3)">
-        下载缓慢？也可前往 <a href="https://github.com/caiwenjun-1219/CCL/releases" target="_blank" rel="noopener" style="color:var(--brand)">Releases 页面</a> 手动选择资产；旧版 1.0.0（三种界面风格）已归档在同一页面。
+        安装包由 CCL 加速节点分发，支持断点续传；国内直连即可，无需借助网络工具。历史版本（含旧版 1.0.0 三种界面风格）见 <a href="https://github.com/caiwenjun-1219/CCL/releases" target="_blank" rel="noopener" style="color:var(--brand)">GitHub Releases</a>（访问该页需自备网络环境）。
       </p>
     </div>
   </section>
@@ -633,6 +657,10 @@ footer .f-links a:hover{color:var(--brand)}
           <div class="a">桌面端默认使用系统 <code>.minecraft</code> 目录模型，实例在 <code>versions\实例名\</code>，libraries 与 assets 全局共享，支持多档版本隔离；也可以在设置里改到任意位置。</div>
         </details>
         <details>
+          <summary>Linux 版怎么安装？</summary>
+          <div class="a">两种方式任选：<b>AppImage</b> 下载后 <code>chmod +x ccl-2.1.0-x64.AppImage</code> 直接运行，不需要安装；<b>tar.xz</b> 解压后运行目录内的 <code>ccl</code>。x64 与 arm64 都有对应文件，注意别下错架构。</div>
+        </details>
+        <details>
           <summary>旧版 1.0.0 还能下载吗？</summary>
           <div class="a">能。旧版（Tauri 内核的 PCL2 / HMCL / 原版三种界面）仍保留在 Releases 页面，但已停止更新，建议使用 2.1.0。</div>
         </details>
@@ -647,9 +675,10 @@ footer .f-links a:hover{color:var(--brand)}
         <h2>现在就换上 CCL</h2>
         <p>下载、登录、开房间。剩下的交给我们。</p>
         <div class="cta-btns">
-          <a class="btn btn-white" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-win-x64-setup.exe">下载 Windows 版</a>
-          <a class="btn btn-line2" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-android-arm64.apk">下载 Android 版</a>
-          <a class="btn btn-line2" href="https://github.com/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-arm64.dmg">下载 macOS 版</a>
+          <a class="btn btn-white" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-win-x64-setup.exe">下载 Windows 版</a>
+          <a class="btn btn-line2" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/CCL-2.1.0-android-arm64.apk">下载 Android 版</a>
+          <a class="btn btn-line2" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-arm64.dmg">下载 macOS 版</a>
+          <a class="btn btn-line2" href="https://zh.ccl.caiwenjun.top/dl/gh/caiwenjun-1219/CCL/releases/download/v2.1.0/ccl-2.1.0-x64.AppImage">下载 Linux 版</a>
         </div>
       </div>
     </div>
