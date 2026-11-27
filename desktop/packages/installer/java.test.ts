@@ -1,0 +1,127 @@
+import { parseJavaVersion, parseJavaVersionOutput, resolveJavaWithDiagnostic } from './java'
+import { describe, test, expect } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+describe('JavaInstaller', () => {
+  describe('#parseJavaVersion', () => {
+    test('should resolve old java version', async () => {
+      const version = `java version "1.7.0_55"
+            Java(TM) SE Runtime Environment (build 1.7.0_55-b13)
+            Java HotSpot(TM) 64-Bit Server VM (build 24.55-b03, mixed mode)`
+      const inf = parseJavaVersion(version)
+      expect(inf).toEqual({ version: '1.7.0_55', majorVersion: 7, patch: 55 })
+    })
+    test('should resolve new java version', async () => {
+      const version = `java 10.0.1 2018-04-17
+            Java(TM) SE Runtime Environment 18.3 (build 10.0.1+10)
+            Java HotSpot(TM) 64-Bit Server VM 18.3 (build 10.0.1+10, mixed mode)`
+      const inf = parseJavaVersion(version)
+      expect(inf).toEqual({ version: '10.0.1.10', majorVersion: 10, patch: 10 })
+    })
+    test('should return undefined if version is not valid', async () => {
+      const version = 'java aaaa 2018-04-17'
+      const inf = parseJavaVersion(version)
+      expect(inf).toEqual(undefined)
+    })
+    test('should not treat Node.js version output as Java', () => {
+      expect(parseJavaVersion('v22.23.2')).toBeUndefined()
+    })
+    test('should parse', () => {
+      const inf = parseJavaVersion(`openjdk version "1.8.0-262"
+OpenJDK Runtime Environment (build 1.8.0-262-b10)
+OpenJDK 64-Bit Server VM (build 25.71-b10, mixed mode)`)
+      expect(inf).toEqual({ version: '1.8.0', majorVersion: 8, patch: -1 })
+    })
+    test('should resolve Oracle JDK 25 GA (no patch component)', () => {
+      const version = `java version "25" 2025-09-16 LTS
+Java(TM) SE Runtime Environment (build 25+36-LTS-3489)
+Java HotSpot(TM) 64-Bit Server VM (build 25+36-LTS-3489, mixed mode, sharing)`
+      const inf = parseJavaVersion(version)
+      expect(inf).toEqual({ version: '25', majorVersion: 25, patch: -1 })
+    })
+    test('should resolve OpenJDK 25 GA (no patch component)', () => {
+      const version = `openjdk version "25" 2025-09-16
+OpenJDK Runtime Environment (build 25+36-3489)
+OpenJDK 64-Bit Server VM (build 25+36-3489, mixed mode)`
+      const inf = parseJavaVersion(version)
+      expect(inf).toEqual({ version: '25', majorVersion: 25, patch: -1 })
+    })
+    test('should resolve Oracle JDK 21 GA (no patch component)', () => {
+      const version = 'java version "21" 2023-09-19 LTS'
+      const inf = parseJavaVersion(version)
+      expect(inf).toEqual({ version: '21', majorVersion: 21, patch: -1 })
+    })
+    test('should accept version output written to stdout', () => {
+      expect(parseJavaVersionOutput('openjdk version "21.0.7" 2025-04-16', '')).toEqual({
+        version: '21.0.7',
+        majorVersion: 21,
+        patch: 7,
+      })
+    })
+    test('should preserve the fourth Java version component', () => {
+      expect(parseJavaVersion('openjdk version "25.0.5.8" 2026-10-21 LTS')).toEqual({
+        version: '25.0.5.8',
+        majorVersion: 25,
+        patch: 8,
+      })
+    })
+    test('should omit a zero fourth Java version component', () => {
+      expect(parseJavaVersion('openjdk version "25.0.5.0" 2026-10-21 LTS')).toEqual({
+        version: '25.0.5',
+        majorVersion: 25,
+        patch: 0,
+      })
+    })
+    test('should include the build number in the Java version', () => {
+      expect(
+        parseJavaVersion(`openjdk version "25.0.5" 2026-10-20 LTS
+OpenJDK Runtime Environment Temurin-25.0.5+8 (build 25.0.5+8-LTS)
+OpenJDK 64-Bit Server VM Temurin-25.0.5+8 (build 25.0.5+8-LTS, mixed mode, sharing)`),
+      ).toEqual({ version: '25.0.5.8', majorVersion: 25, patch: 8 })
+    })
+    test('should omit a zero build number from the Java version', () => {
+      expect(
+        parseJavaVersion(`openjdk version "25.0.5" 2026-10-20 LTS
+OpenJDK Runtime Environment Temurin-25.0.5+0 (build 25.0.5+0-LTS)`),
+      ).toEqual({ version: '25.0.5', majorVersion: 25, patch: 0 })
+    })
+    test('should resolve JAVA_VERSION line from JDK release file with major-only version', () => {
+      const inf = parseJavaVersion('JAVA_VERSION="25"')
+      expect(inf).toEqual({ version: '25', majorVersion: 25, patch: -1 })
+    })
+    test('should invoke an executable directly when resolving its version', async () => {
+      const diagnostic = await resolveJavaWithDiagnostic(process.execPath)
+      expect(diagnostic.java).toBeUndefined()
+      expect(diagnostic.stderr).toContain('-version')
+    })
+    test.skipIf(process.platform === 'win32')('terminates a Java probe that exceeds its timeout', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'xmcl-hung-java-'))
+      const path = join(directory, 'java')
+      try {
+        await writeFile(path, '#!/usr/bin/env node\nwhile (true) {}\n', { mode: 0o755 })
+        const start = Date.now()
+        const result = await resolveJavaWithDiagnostic(path, { timeout: 100 })
+        expect(result.timedOut).toBe(true)
+        expect(result.java).toBeUndefined()
+        expect(Date.now() - start).toBeLessThan(2000)
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    })
+    test.skipIf(process.platform === 'win32')('rejects version output from a failed Java process', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'xmcl-failed-java-'))
+      const path = join(directory, 'java')
+      try {
+        await writeFile(path, '#!/bin/sh\necho \'openjdk version "17.0.2"\' >&2\nexit 1\n', { mode: 0o755 })
+        const result = await resolveJavaWithDiagnostic(path, { timeout: 1000 })
+        expect(result.java).toBeUndefined()
+        expect(result.exitCode).toBe(1)
+        expect(result.stderr).toContain('17.0.2')
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    })
+  })
+})
