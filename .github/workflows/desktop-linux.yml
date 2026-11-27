@@ -42,8 +42,8 @@ jobs:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       NODE_OPTIONS: --max-old-space-size=8192
-      # 只出这三种：rpm/pacman 在 CI 上要额外装工具，收益低
-      CCL_LINUX_TARGETS: AppImage,deb,tar.xz
+      # deb 在 electron-builder 26 上会抛 "Unsupported arch"（见 issue），先只出可用的两种
+      CCL_LINUX_TARGETS: AppImage,tar.xz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,8 +92,8 @@ jobs:
           name: ccl-linux-${{ matrix.arch }}
           path: |
             desktop/xmcl-electron-app/build/output/*.AppImage
-            desktop/xmcl-electron-app/build/output/*.deb
             desktop/xmcl-electron-app/build/output/*.tar.xz
+            desktop/xmcl-electron-app/build/output/*.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -104,7 +104,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(xmcl-electron-app/build/output/*.AppImage xmcl-electron-app/build/output/*.deb xmcl-electron-app/build/output/*.tar.xz)
+          files=(xmcl-electron-app/build/output/*.AppImage xmcl-electron-app/build/output/*.tar.xz xmcl-electron-app/build/output/*.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             echo "没有可上传的产物"; exit 1
           fi
