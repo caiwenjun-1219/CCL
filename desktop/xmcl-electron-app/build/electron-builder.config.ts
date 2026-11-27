@@ -127,7 +127,8 @@ export const config = {
       },
     },
     category: 'Game',
-    icon: 'icons/dark.icns',
+    // Linux 用 png：electron-builder 的 AppImage/deb 打包会拒绝 icns
+    icon: 'icons/256x256.png',
     artifactName: 'ccl-${version}-${arch}.${ext}',
     // CCL_LINUX_MIN=1 只打 x64 tar.xz：Windows 上交叉打包只能出这个
     // （AppImage 需要 Linux 下的 mksquashfs，deb/rpm 需要 fpm）

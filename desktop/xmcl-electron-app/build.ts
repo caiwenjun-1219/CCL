@@ -223,8 +223,14 @@ async function start() {
     : archArg === 'arm64'
       ? [Arch.arm64]
       : undefined
+  // CCL_LINUX_TARGETS 用于按需裁剪 Linux 产物（如 CI 只出 AppImage,deb,tar.xz），
+  // 不传则沿用 electron-builder.config.ts 里的完整目标列表。
+  const linuxTargetsArg = process.env.CCL_LINUX_TARGETS
   const targets = platformArg === 'linux'
-    ? Platform.LINUX.createTarget(undefined, archs)
+    ? Platform.LINUX.createTarget(
+        linuxTargetsArg ? linuxTargetsArg.split(',').map((t) => t.trim()).filter(Boolean) : undefined,
+        archs,
+      )
     : platformArg === 'mac'
       // 显式只打 dmg：不传 targets 时 electron-builder 会按默认目标追加 zip，
       // 而 zip 在 CI 上会因为 app 目录里的符号链接/并发读而失败（exit 18）。

@@ -1,0 +1,112 @@
+name: Build Desktop (Linux)
+
+# 在 Linux runner 上原生构建 CCL 桌面端。
+# 为什么必须用 Linux runner：node_datachannel 是原生模块，交叉编译的 .node
+# 在目标平台加载会崩；deb/AppImage 也需要各自架构的本机工具链。
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的分支或 tag（留空=当前分支）'
+        required: false
+        default: ''
+      release_tag:
+        description: '构建完把安装包传到这个 Release tag（留空=只存 artifact）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04 # x64
+            arch: x64
+          # GitHub 对公开仓库提供 arm64 runner；私有仓库没有，会直接排不上队。
+          - os: ubuntu-24.04-arm # arm64
+            arch: arm64
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      NODE_OPTIONS: --max-old-space-size=8192
+      # 只出这三种：rpm/pacman 在 CI 上要额外装工具，收益低
+      CCL_LINUX_TARGETS: AppImage,deb,tar.xz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
+          key: ${{ runner.os }}-${{ matrix.arch }}-electron-${{ hashFiles('desktop/pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build renderer
+        run: pnpm run --prefix xmcl-keystone-ui build
+
+      - name: Package Linux bundles
+        env:
+          RELEASE: 'true'
+          NODE_ENV: production
+          CCL_PLATFORM: linux
+          CCL_ARCH: ${{ matrix.arch }}
+        run: pnpm run --prefix xmcl-electron-app build
+
+      - name: Show artifacts
+        run: ls -lh xmcl-electron-app/build/output/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccl-linux-${{ matrix.arch }}
+          path: |
+            desktop/xmcl-electron-app/build/output/*.AppImage
+            desktop/xmcl-electron-app/build/output/*.deb
+            desktop/xmcl-electron-app/build/output/*.tar.xz
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload to Release
+        if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          files=(xmcl-electron-app/build/output/*.AppImage xmcl-electron-app/build/output/*.deb xmcl-electron-app/build/output/*.tar.xz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有可上传的产物"; exit 1
+          fi
+          ls -lh "${files[@]}"
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
