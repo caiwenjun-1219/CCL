@@ -531,6 +531,12 @@ feedback:
   qqEnterGroup: Join
   reddit: Reddit
   redditDescription: Join the r/CCL subreddit community
+  forum: CCL Forum
+  forumDescription: Report issues and discuss modpacks or multiplayer
+  forumOpen: Open
+  website: CCL Website
+  websiteDescription: Download the latest version, read changelogs and FAQ
+  websiteOpen: Open
 fileDetail:
   fileSize: File Size
   filesize: File size
@@ -1717,8 +1723,12 @@ neoForgedVersion:
   disable: Disable NeoForged
   empty: NeoForged does not support {version}
 news:
-  name: News
-  readMore: Read More
+  name: Announcements
+  readMore: View details
+cclNotice:
+  info: Notice
+  warn: Warning
+  critical: Important
 optifineVersion:
   disable: Disable Optifine
   empty: Optifine does not support Minecraft {version}

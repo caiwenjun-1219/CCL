@@ -37,8 +37,10 @@ const allNews = computed((): LauncherNews[] => {
   const result: LauncherNews[] = [
     ...launcherNews.value,
     ...news.value.map((n) => ({
+      id: n.readMoreLink,
       title: n.title,
       category: n.tag,
+      level: 'info' as const,
       date: n.date,
       description: n.text,
       image: {
@@ -323,6 +325,7 @@ const { focused } = useFocus(filter)
 useTextFieldBehavior(filter, focused)
 
 function openInBrowser(url: string) {
+  if (!url) return
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
@@ -394,15 +397,17 @@ useTutorial(
               />
             </template>
             <v-carousel-item v-for="(item, index) in allNews.slice(0, 8)" :key="index">
-              <div class="news-slide" @click="openInBrowser(item.link)">
+              <div class="news-slide" :class="{ 'news-slide--clickable': !!item.link }" @click="openInBrowser(item.link)">
                 <div class="news-image-wrapper">
-                  <v-img :src="item.image.url" height="280" cover class="news-image">
+                  <v-img v-if="item.image?.url" :src="item.image.url" height="280" cover class="news-image">
                     <template v-slot:placeholder>
                       <div class="d-flex align-center justify-center fill-height">
                         <v-progress-circular indeterminate color="primary"></v-progress-circular>
                       </div>
                     </template>
                   </v-img>
+                  <!-- 云控公告没有配图，用级别色块兜底 -->
+                  <div v-else class="news-image news-image--plain" :class="`news-image--${item.level}`" />
                   <div class="news-gradient"></div>
                 </div>
                 <div class="news-info">
@@ -415,7 +420,7 @@ useTutorial(
                   </div>
                   <h3 class="news-title">{{ item.title }}</h3>
                   <p class="news-description">{{ item.description }}</p>
-                  <v-btn color="primary" class="news-read-more" size="small" variant="text">
+                  <v-btn v-if="item.link" color="primary" class="news-read-more" size="small" variant="text">
                     {{ t('news.readMore') }}
                     <v-icon end size="small">open_in_new</v-icon>
                   </v-btn>
@@ -701,6 +706,33 @@ useTutorial(
 
 .news-slide:hover {
   transform: scale(1.01);
+}
+
+.news-slide--clickable {
+  cursor: pointer;
+}
+
+.news-slide:not(.news-slide--clickable) {
+  cursor: default;
+}
+
+/* 云控公告没有配图时的级别色块 */
+.news-image--plain {
+  width: 100%;
+  height: 280px;
+  background-size: cover;
+}
+
+.news-image--info {
+  background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
+}
+
+.news-image--warn {
+  background: linear-gradient(135deg, #b45309 0%, #f59e0b 100%);
+}
+
+.news-image--critical {
+  background: linear-gradient(135deg, #7f1d1d 0%, #ef4444 100%);
 }
 
 .news-image-wrapper {

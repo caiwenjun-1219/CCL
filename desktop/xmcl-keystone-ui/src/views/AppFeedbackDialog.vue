@@ -98,49 +98,31 @@ const { t } = useI18n()
 
 const feedbackChannels = computed(() => [
   {
+    title: t('feedback.forum'),
+    description: t('feedback.forumDescription'),
+    icon: 'forum',
+    color: 'primary',
+    link: 'http://caiwenjuncraftlauncher.free.mbbs.cc',
+    target: 'browser',
+    buttonText: t('feedback.forumOpen')
+  },
+  {
     title: t('feedback.github'),
     description: t('feedback.githubDescription'),
     icon: 'code',
     color: 'black',
-    link: 'https://github.com/Voxelum/x-minecraft-launcher/issues/new',
+    link: 'https://github.com/caiwenjun-1219/CCL/issues',
     target: 'browser',
     buttonText: t('feedback.githubOpenIssue')
   },
   {
-    title: t('feedback.reddit'),
-    description: t('feedback.redditDescription'),
-    icon: 'xmcl:reddit',
+    title: t('feedback.website'),
+    description: t('feedback.websiteDescription'),
+    icon: 'public',
     color: 'deep-orange darken-1',
-    link: 'https://www.reddit.com/r/CCL/',
+    link: 'https://ccl.caiwenjun.top',
     target: 'browser',
-    buttonText: t('feedback.discordJoin')
-  },
-  {
-    title: t('feedback.qq'),
-    description: t('feedback.qqDescription', { number: 858391850 }),
-    icon: 'chat',
-    color: 'blue',
-    link: 'https://jq.qq.com/?_wv=1027&k=5Py5zM1',
-    target: '_blank',
-    buttonText: t('feedback.qqEnterGroup')
-  },
-  {
-    title: t('feedback.kook'),
-    description: t('feedback.kookDescription'),
-    icon: 'chat',
-    color: 'purple',
-    link: 'https://kook.top/gqjSHh',
-    target: 'browser',
-    buttonText: t('feedback.qqEnterGroup')
-  },
-  {
-    title: t('feedback.discord'),
-    description: t('feedback.discordDescription'),
-    icon: 'xmcl:discord',
-    color: 'indigo darken-2',
-    link: 'https://discord.gg/W5XVwYY7GQ',
-    target: 'browser',
-    buttonText: t('feedback.discordJoin')
+    buttonText: t('feedback.websiteOpen')
   }
 ])
 

@@ -84,17 +84,19 @@ export interface DownloadUpdateTrackerEvents {
   'download-update.full': WithDownload<{}>
   'download-update.appx': {}
   'download-update.manual': {}
+  'download-update.ccl': WithDownload<{}>
 }
 
 export interface DownloadUpdateTask extends Task {
   type: 'downloaUpdate'
-  operation: 'autoupdater' | 'asar' | 'appx' | 'manual' | 'deskgap'
+  operation: 'autoupdater' | 'asar' | 'appx' | 'manual' | 'deskgap' | 'ccl'
   version: string
   substate:
     | SubState<DownloadUpdateTrackerEvents, 'download-update.asar'>
     | SubState<DownloadUpdateTrackerEvents, 'download-update.full'>
     | SubState<DownloadUpdateTrackerEvents, 'download-update.appx'>
     | SubState<DownloadUpdateTrackerEvents, 'download-update.manual'>
+    | SubState<DownloadUpdateTrackerEvents, 'download-update.ccl'>
 }
 
 export type Tasks =

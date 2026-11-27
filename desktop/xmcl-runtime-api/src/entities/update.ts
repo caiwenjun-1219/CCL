@@ -31,6 +31,11 @@ export const enum ElectronUpdateOperation {
    * Use appx update
    */
   Appx = 'appx',
+  /**
+   * Download the full installer from the CCL update service and run it.
+   * (CCL 自有更新源：zh.ccl.caiwenjun.top/api/v1/update/check)
+   */
+  Ccl = 'ccl',
 }
 
 export interface ReleaseInfo {

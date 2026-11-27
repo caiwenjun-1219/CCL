@@ -16,7 +16,7 @@ import { definedPlugins } from './definedPlugins'
 import { isReplayableFetchBody, splitFetchBody } from './fetchBody'
 import { getOzonePlatform } from './ozonePlatform'
 import { applyPendingSettings } from './pendingSettings'
-import { ElectronUpdater } from './utils/updater'
+import { CclUpdater } from './utils/cclUpdater'
 import { getWindowsUtils } from './utils/windowsUtils'
 
 class ElectronShell implements Shell {
@@ -182,7 +182,7 @@ export default class ElectronLauncherApp extends LauncherApp {
       new ElectronShell(),
       new ElectronSecretStorage(join(app.getPath('appData'), LAUNCHER_NAME, IS_DEV ? 'secret-dev' : 'secret')),
       (app) => new ElectronController(app as ElectronLauncherApp),
-      (app) => new ElectronUpdater(app as ElectronLauncherApp),
+      (app) => new CclUpdater(app as ElectronLauncherApp),
       defaultApp,
       getEnv(),
       definedPlugins,

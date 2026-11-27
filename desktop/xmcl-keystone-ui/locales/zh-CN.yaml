@@ -502,6 +502,12 @@ feedback:
   qq: QQ 群
   qqDescription: 加入反馈群直接和作者聊聊吧，群号 {number}
   qqEnterGroup: 加群
+  forum: CCL 论坛
+  forumDescription: 发帖反馈问题、交流整合包与联机
+  forumOpen: 去论坛
+  website: CCL 官网
+  websiteDescription: 下载最新版、查看更新日志与常见问题
+  websiteOpen: 打开官网
 fileDetail:
   fileSize: 文件大小
   filesize: 文件大小
@@ -1653,8 +1659,12 @@ neoForgedVersion:
   disable: 不使用 NeoForge
   empty: Minecraft {version} 不支持 NeoForge
 news:
-  name: 新闻
-  readMore: 阅读更多
+  name: 公告
+  readMore: 查看详情
+cclNotice:
+  info: 公告
+  warn: 提醒
+  critical: 重要
 optifineVersion:
   disable: 不使用 Optifine
   empty: Minecraft {version} 不支持 Optifine
