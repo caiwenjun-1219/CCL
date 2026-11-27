@@ -1,0 +1,110 @@
+name: Build Desktop (Windows)
+
+# 在 Windows runner 上原生构建 CCL 桌面端。
+# 为什么必须用 Windows runner：node_datachannel 是原生模块，交叉编译的 .node
+# 在目标平台加载会崩；NSIS 安装包也需要 Windows 下的 makensis。
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的分支或 tag（留空=当前分支）'
+        required: false
+        default: ''
+      release_tag:
+        description: '构建完把安装包传到这个 Release tag（留空=只存 artifact）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      NODE_OPTIONS: --max-old-space-size=8192
+      # CCL_NSIS 让 electron-builder 走 nsis 目标（默认是 zip + appx，appx 需要商店 publisher）
+      CCL_NSIS: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      # node-gyp 在 Python 3.12+ 上仍有个别包不兼容，固定 3.11
+      - name: Setup Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
+          key: ${{ runner.os }}-x64-electron-${{ hashFiles('desktop/pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build renderer
+        run: pnpm run --prefix xmcl-keystone-ui build
+
+      - name: Package NSIS installer
+        env:
+          RELEASE: 'true'
+          NODE_ENV: production
+          CCL_PLATFORM: win
+          CCL_ARCH: x64
+        run: pnpm run --prefix xmcl-electron-app build
+
+      - name: Show artifacts
+        shell: bash
+        run: ls -lh xmcl-electron-app/build/output/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccl-windows-x64
+          path: |
+            desktop/xmcl-electron-app/build/output/*.exe
+            desktop/xmcl-electron-app/build/output/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload to Release
+        if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          files=(xmcl-electron-app/build/output/*.exe xmcl-electron-app/build/output/*.sha256)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有可上传的产物"; exit 1
+          fi
+          ls -lh "${files[@]}"
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber

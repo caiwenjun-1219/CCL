@@ -60,6 +60,13 @@ export const config = {
     publisherDisplayName: 'CI010',
     setBuildNumber: true,
   },
+  // Windows 安装包沿用 2.1.0 的命名（官网下载链接按这个名字写死）
+  nsis: {
+    artifactName: 'CCL-${version}-win-${arch}-setup.${ext}',
+    oneClick: false,
+    allowToChangeInstallationDirectory: true,
+    perMachine: false,
+  },
   dmg: {
     artifactName: 'ccl-${version}-${arch}.${ext}',
     contents: [
