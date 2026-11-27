@@ -102,7 +102,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(xmcl-electron-app/build/output/*.exe xmcl-electron-app/build/output/*.sha256)
+          files=(xmcl-electron-app/build/output/*.exe xmcl-electron-app/build/output/*.exe.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             echo "没有可上传的产物"; exit 1
           fi

@@ -97,7 +97,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ccl-macos-${{ matrix.arch }}
-          path: desktop/xmcl-electron-app/build/output/*.dmg
+          path: |
+            desktop/xmcl-electron-app/build/output/*.dmg
+            desktop/xmcl-electron-app/build/output/*.dmg.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -108,5 +110,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          ls -lh xmcl-electron-app/build/output/*.dmg
-          gh release upload "$RELEASE_TAG" xmcl-electron-app/build/output/*.dmg --clobber
+          ls -lh xmcl-electron-app/build/output/*.dmg xmcl-electron-app/build/output/*.dmg.sha256
+          gh release upload "$RELEASE_TAG" xmcl-electron-app/build/output/*.dmg xmcl-electron-app/build/output/*.dmg.sha256 --clobber

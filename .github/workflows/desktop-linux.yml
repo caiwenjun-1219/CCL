@@ -84,6 +84,18 @@ jobs:
           CCL_ARCH: ${{ matrix.arch }}
         run: pnpm run --prefix xmcl-electron-app build
 
+      - name: Normalize AppImage name
+        # electron-builder 的 AppImage 目标把 ${arch}=x64 映射成 x86_64，
+        # 官网链接和 2.1.0 及以前都叫 x64，这里统一改回来
+        run: |
+          cd xmcl-electron-app/build/output
+          shopt -s nullglob
+          for f in *.x86_64.AppImage *.x86_64.AppImage.sha256; do
+            [ -e "$f" ] || continue
+            mv -f "$f" "${f//x86_64/x64}"
+            echo "renamed $f -> ${f//x86_64/x64}"
+          done
+
       - name: Show artifacts
         run: ls -lh xmcl-electron-app/build/output/ || true
 
@@ -92,8 +104,9 @@ jobs:
           name: ccl-linux-${{ matrix.arch }}
           path: |
             desktop/xmcl-electron-app/build/output/*.AppImage
+            desktop/xmcl-electron-app/build/output/*.AppImage.sha256
             desktop/xmcl-electron-app/build/output/*.tar.xz
-            desktop/xmcl-electron-app/build/output/*.sha256
+            desktop/xmcl-electron-app/build/output/*.tar.xz.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -104,7 +117,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(xmcl-electron-app/build/output/*.AppImage xmcl-electron-app/build/output/*.tar.xz xmcl-electron-app/build/output/*.sha256)
+          files=(xmcl-electron-app/build/output/*.AppImage xmcl-electron-app/build/output/*.tar.xz xmcl-electron-app/build/output/*.AppImage.sha256 xmcl-electron-app/build/output/*.tar.xz.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             echo "没有可上传的产物"; exit 1
           fi
