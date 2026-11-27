@@ -1,151 +1,90 @@
-# Cwj Craft Launcher (CCL)
+# CCL · Cwj Craft Launcher
 
-基于 **Tauri 2 + React + TypeScript + Rust** 的 Minecraft 启动器，Windows 优先。
+Minecraft 启动器，桌面端基于 **Electron + Vue（XMCL 内核）**，Windows / macOS / Linux 三端同源。
 
-## 功能特性
+> 早期用 Tauri 2 + React 写的 1.0.x 版本（PCL2 / HMCL / 原版三套界面）已于 2026-11-27 从 `main` 移除，源码可在该日期之前的提交里找回；安装包仍保留在 Releases。
 
-| 模块 | 功能 |
+## 下载
+
+| 平台 | 文件 |
 |---|---|
-| 游戏启动 | 原版 / Fabric / Quilt / Forge / NeoForge，classpath 自动组装、natives 解压、参数规则解析、进程管理与实时日志流 |
-| 版本下载 | BMCLAPI 国内镜像优先，自动一级一级回退到 Mojang 官方源；断点续传 + SHA1 校验 + 并发下载 |
-| Java 管理 | 自动扫描本机 JDK、Adoptium 在线下载托管 JDK、按 MC 版本自动选择 Java 主版本 |
-| 账户 | 微软设备码登录（Xbox Live → XSTS → Minecraft 令牌链，自动刷新）+ 离线模式 |
-| 模组市场 | Modrinth API v2 + CurseForge API 双源搜索、版本匹配、一键安装、启用/禁用/删除 |
-| 整合包 | 导入 Modrinth `.mrpack` 与 CurseForge `manifest.json` 整合包（自动装 MC 版本+加载器+全部模组+配置）；**把文件直接拖到窗口上即自动识别安装**；导出实例为 `.mrpack` |
-| 云控更新 | Cloudflare Worker 后端：启动时自动检查更新、首页公告、强制更新、SHA256 校验、静默安装 |
-| 下载引擎 | 多源回退、分片并发（默认 24 路）、Range 断点续传、失败自动换源、全局下载任务坞 |
+| Windows x64 | `CCL-<版本>-win-x64-setup.exe` |
+| macOS Intel | `ccl-<版本>-x64.dmg` |
+| macOS Apple Silicon | `ccl-<版本>-arm64.dmg` |
+| Linux x64 / arm64 | `ccl-<版本>-x64.AppImage`、`ccl-<版本>-arm64.AppImage`（或对应 `tar.xz`） |
 
-## 技术栈
+- Releases：<https://github.com/caiwenjun-1219/CCL/releases>
+- 官网：<https://ccl.caiwenjun.top>
+- 论坛：<http://caiwenjuncraftlauncher.free.mbbs.cc>
 
-- **前端**：Tauri 2 · React 19 · TypeScript · Vite 6 · Tailwind CSS 4 · Zustand · React Router · lucide-react
-- **后端**：Rust · Tauri 2 · reqwest（native-tls）· tokio · serde · sha1/sha2/md5 · zip
-- **云控**：Cloudflare Workers · KV（配置/密码哈希）· R2（安装包存储）
-- **资源源**：BMCLAPI2（版本/库/资源/Fabric/Quilt 元数据）→ Mojang 官方；NeoForge 走 maven.neoforged.net；Java 走 Adoptium API
+下载链接统一走加速反代 `https://zh.ccl.caiwenjun.top/dl/gh/<owner>/<repo>/releases/download/<tag>/<file>`，国内直连可用且支持 `Range` 断点续传。
 
-## 目录结构
+## 功能
+
+| 模块 | 说明 |
+|---|---|
+| 账户 | 微软正版（设备码）、**第三方皮肤站（LittleSkin / 自定义 Yggdrasil）**、离线模式 |
+| 游戏 | 原版 / Fabric / Quilt / Forge / NeoForge，Java 自动匹配，多实例隔离 |
+| 模组 | Modrinth + CurseForge 双源、一键安装、整合包导入导出 |
+| 联机 | Campfire 房间码 |
+| 更新 | 内置检查 + 公告，三端 CI 统一出包 |
+
+## 仓库结构
 
 ```
 CCL/
-├── src/                        # React 前端
-│   ├── components/Layout.tsx   # 标题栏/侧边栏/下载坞/更新横幅/强制更新弹窗/公告
-│   ├── pages/                  # 首页/实例/版本/模组/整合包/Java/账户/设置
-│   ├── lib/tauri.ts            # 命令封装与事件订阅（前后端契约）
-│   └── store/app.ts            # Zustand 全局状态
-├── src-tauri/                  # Rust 后端
-│   ├── src/downloader.rs       # 多源回退下载引擎（核心）
-│   ├── src/minecraft.rs        # 版本清单/安装/加载器（Fabric/Quilt/Forge/NeoForge）
-│   ├── src/java.rs             # Java 扫描/下载/自动选择
-│   ├── src/auth.rs             # 微软设备码登录 + 离线模式
-│   ├── src/launcher.rs         # classpath/参数规则/进程/日志
-│   ├── src/modrinth.rs         # Modrinth API v2
-│   ├── src/curseforge.rs       # CurseForge API
-│   ├── src/modpack.rs          # .mrpack / CurseForge 整合包导入导出
-│   ├── src/updater.rs          # 云控更新（cclconfig.caiwenjun.top）
-│   ├── src/protocol.rs         # ccl:// 自定义协议（本地文件服务）
-│   └── src/instances.rs        # 实例 CRUD / 模组管理
-├── cloud-worker/               # 云控后端（Cloudflare Worker）
-└── docs/                       # 技术方案文档
+├── desktop/                    # Electron 桌面端（pnpm workspace）
+│   ├── xmcl-keystone-ui/       # Vue 前端
+│   ├── xmcl-electron-app/      # 主进程 / 打包脚本（build.ts + electron-builder）
+│   ├── xmcl-runtime/           # 启动器运行时（账户、实例、启动）
+│   └── packages/               # @xmcl/* 底层库（user / install / modrinth…）
+├── website/                    # 官网静态站（Python 生成 + wrangler 部署）
+├── cloud-worker/               # 早期 Tauri 版的云控后端（Cloudflare Worker，现网仍在跑）
+└── .github/workflows/          # desktop-linux / desktop-mac / desktop-win 三端构建
 ```
 
-## ccl:// 自定义协议
+## 构建
 
-参考 VersePc2 的 `wewp://` 设计（`register_uri_scheme_protocol`），CCL 注册了 `ccl` 协议为前端提供本地文件服务。Windows 上经 wry workaround，**前端统一用 `http://ccl.localhost/<路径>` 访问**（Rust 侧收到的是 `ccl://localhost/<路径>`）：
+### 本地
 
-| URL | 说明 |
-|---|---|
-| `http://ccl.localhost/instances/<实例ID>/<相对路径>` | 实例游戏目录（如 `screenshots/xxx.png`） |
-| `http://ccl.localhost/data/<相对路径>` | CCL 数据目录（如 `accounts.json`） |
-
-特性：MIME 推断、HTTP Range（206，大媒体不会整文件读入内存）、CORS、逐段 percent 解码 + `..` 拒绝 + canonicalize 前缀校验（防路径穿越）。前端辅助函数见 `src/lib/tauri.ts` 的 `cclUrl()`，首个用途是首页实例卡片展示最新截图。
-
-## 本地开发
-
-前置：Node.js 18+、Rust stable、MSVC BuildTools（C++ 桌面开发负载）。
+前置：Node.js 22+、pnpm 11、各平台原生构建工具（Windows 需 VS BuildTools，mac 需 Xcode CLT）。
 
 ```bash
-# 前端依赖（npmmirror 镜像）
-npm install
+cd desktop
+pnpm install
+pnpm run --prefix xmcl-keystone-ui build          # 渲染进程
 
-# 开发模式（热更新）
-npm run tauri dev
-
-# 类型检查
-npx tsc --noEmit
-
-# 生产构建（产出 NSIS 安装包）
-npm run tauri build
+# 打当前平台安装包（Linux 可用 CCL_LINUX_TARGETS 裁剪目标）
+RELEASE=true CCL_PLATFORM=win CCL_ARCH=x64 pnpm run --prefix xmcl-electron-app build
 ```
 
-Rust 工具链在本机位于 `F:\rust`（RUSTUP_HOME/CARGO_HOME），crates.io 走 ustc 镜像（rsproxy.cn 已不稳定，见 `F:\rust\cargo\config.toml`）。
+产物落在 `desktop/xmcl-electron-app/build/output/`。`node_datachannel` 是原生模块，**不能跨平台交叉打包**，Windows / macOS / Linux 必须在各自系统上构建。
 
-## Android 手机版
+### CI 发布
 
-CCL 同时构建 Android 端（Tauri 2 mobile）。**能力边界**：版本 / 整合包 / 模组市场浏览与下载、实例管理、账户登录均可用；**启动游戏不可用**（PC Java 版 Minecraft 无官方 Android 客户端），界面会给出相应提示。游戏数据落在应用私有目录的 `.minecraft`，无需存储权限。
+推 `v*` tag 会同时触发三条流水线，产物自动挂到同名 Release：
 
 ```bash
-# 一次性初始化（生成 src-tauri/gen/android）
-npx tauri android init
-
-# 构建 release APK
-npm run tauri android build --apk
+git tag v2.1.2 && git push origin v2.1.2
 ```
 
-Windows 上若未开启「开发者模式」，`tauri android build` 会在把 `libccl_lib.so` 软链进 `jniLibs` 时失败（无 SeCreateSymbolicLinkPrivilege）。两种解法：
+也可以手动 `workflow_dispatch`，填 `ref` 与 `release_tag` 只跑单端。顺序上先建好 Release（草稿即可）再推 tag，否则 `gh release upload` 找不到目标。
 
-1. 设置 → 隐私和安全性 → **开发者模式**打开，之后命令可直接用；
-2. 或手动复刻其流程（本机已验证可产出可安装 APK）：
+## 官网
 
 ```bash
-# 1) cargo 编出 so（NDK 编译器需指向 NDK 的 clang wrapper）
-cargo build --release --target aarch64-linux-android
-
-# 2) 手动复制 so 到 jniLibs（替代 symlink）
-cp src-tauri/target/aarch64-linux-android/release/libccl_lib.so \
-   src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/
-
-# 3) gradle 打包 arm64 变体（排除 rust 任务，避免再触发 cargo+symlink）
-cd src-tauri/gen/android
-./gradlew assembleArm64Release -x rustBuildArm64Release
-
-# 4) zipalign + apksigner 签名（密钥用 keytool 生成，密码自定）
-zipalign -f -p 4 app-arm64-release-unsigned.apk aligned.apk
-apksigner sign --ks <keystore> --ks-pass pass:<pwd> --out CCL-1.0.0-arm64.apk aligned.apk
+cd website
+python build.py
+cp index.html dist/index.html
+npx wrangler deploy
 ```
 
-## 云控后端部署
+## 数据目录
 
-详见 [cloud-worker/README.md](cloud-worker/README.md)。要点：
+- Windows：`%APPDATA%\CCL`
+- macOS：`~/Library/Application Support/CCL`
+- Linux：`~/.config/CCL`
 
-```bash
-cd cloud-worker
-npm install
-npx wrangler login
-npx wrangler kv:namespace create CCL_KV   # id 填入 wrangler.toml
-npx wrangler r2 bucket create ccl-updates
-npm run deploy
-# 然后在 Cloudflare 后台把 cclconfig.caiwenjun.top 绑定为该 Worker 自定义域名
-```
+## 许可
 
-| 路径 | 用途 |
-|---|---|
-| `/config` | 启动器读取：latest_version / min_version / download_url / sha256 / release_notes / force_update / announcement |
-| `/download/<key>` | R2 安装包分发（带下载计数） |
-| `/dashboard` | 管理面板，默认密码 `123456`（登录后可改） |
-
-## 上传 GitHub
-
-```bash
-git init
-git add .
-git commit -m "feat: CCL v1.0.0 - Tauri Minecraft launcher with cloud control"
-git branch -M main
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git push -u origin main
-```
-
-## 数据存储位置
-
-- 设置/账户/实例：`%APPDATA%\com.caiwenjun.ccl\`
-  - `settings.json`、`accounts.json`、`instances/<id>/instance.json`
-  - 每个实例的游戏目录：`instances/<id>/game/`（versions/libraries/assets/mods/config…）
-  - 托管的 JDK：`java/<版本>/`
+`desktop/` 源自 [XMCL](https://github.com/Voxelum/x-minecraft-launcher)（MIT），CCL 的改动同样以 MIT 发布；随包分发的 Campfire 为 GPL-3.0。
