@@ -60,15 +60,12 @@
 <script lang="ts" setup>
 import { LauncherNews, useLauncherNews } from '@/composables/launcherNews'
 
-const READ_KEY = 'cclAnnouncementRead'
-
 const { news } = useLauncherNews()
 const { t } = useI18n()
 
 const isShown = ref(false)
 const index = ref(0)
 const queue = ref<LauncherNews[]>([])
-const readIds = ref<string[]>(loadReadIds())
 
 let shownThisSession = false
 
@@ -82,32 +79,17 @@ const current = computed(() => {
   }
 })
 
+// 每次启动弹一轮：公告是运营动作，一直挂着的时候就该每次提醒，
+// 而不是「点过一次就永远不再出现」。
 watch(news, (list) => {
-  if (shownThisSession || isShown.value) return
-  const unread = list.filter((n) => !readIds.value.includes(n.id))
-  if (!unread.length) return
-  queue.value = unread
+  if (shownThisSession || isShown.value || !list.length) return
+  queue.value = list
   index.value = 0
   isShown.value = true
   shownThisSession = true
 }, { immediate: true })
 
-function loadReadIds(): string[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(READ_KEY) || '[]')
-    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : []
-  } catch {
-    return []
-  }
-}
-
 function close() {
-  const ids = queue.value.map((n) => n.id)
-  if (ids.length) {
-    readIds.value = Array.from(new Set([...readIds.value, ...ids]))
-    // 只留最近 100 条，避免 localStorage 无限增长
-    localStorage.setItem(READ_KEY, JSON.stringify(readIds.value.slice(-100)))
-  }
   isShown.value = false
 }
 
