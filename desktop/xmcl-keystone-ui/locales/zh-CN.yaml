@@ -1665,6 +1665,10 @@ cclNotice:
   info: 公告
   warn: 提醒
   critical: 重要
+  emptyBody: 暂无更多内容
+  gotIt: 我知道了
+  prev: 上一条
+  next: 下一条
 optifineVersion:
   disable: 不使用 Optifine
   empty: Minecraft {version} 不支持 Optifine

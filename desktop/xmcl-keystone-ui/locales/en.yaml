@@ -1729,6 +1729,10 @@ cclNotice:
   info: Notice
   warn: Warning
   critical: Important
+  emptyBody: Nothing more to show
+  gotIt: Got it
+  prev: Previous
+  next: Next
 optifineVersion:
   disable: Disable Optifine
   empty: Optifine does not support Minecraft {version}

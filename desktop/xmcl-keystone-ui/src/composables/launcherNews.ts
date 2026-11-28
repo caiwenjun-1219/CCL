@@ -34,6 +34,17 @@ interface CclAnnouncement {
 }
 
 /**
+ * 云控里填的外链常常不带协议（例如 `ccl.caiwenjun.top`），
+ * 直接交给 window.open 会被当成相对路径，最后打开的是本地地址。
+ */
+function normalizeLink(raw: string): string {
+  const url = (raw ?? '').trim()
+  if (!url) return ''
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url
+  return `https://${url}`
+}
+
+/**
  * 启动器公告来自 CCL 自家云控服务（云控 App 里发的公告），
  * 不再读 api.xmcl.app 的 XMCL 新闻。
  */
@@ -65,7 +76,7 @@ export function useLauncherNews() {
       date: new Date((item.startsAt || 0) * 1000).toISOString(),
       title: item.title,
       description: item.body,
-      link: item.url || '',
+      link: normalizeLink(item.url),
     }))
   }, useSWRVConfig())
 

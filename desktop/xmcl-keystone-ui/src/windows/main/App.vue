@@ -32,6 +32,7 @@
     <AppSharedTooltip />
     <UserProfileDialog :value="userProfileDialogShown" @input="userProfileDialogShown = $event" />
     <LittleSkinLoginDialog />
+    <CclAnnouncementDialog v-if="!isBigPicture" />
     <component :is="lazyDialogComponent" v-if="lazyDialogComponent" />
     <AppSideBarGroupSettingDialog :default-color="defaultColor" />
     <AppSideBarAutoGroupDialog />
@@ -47,6 +48,7 @@
     </div>
     <UserProfileDialog :value="userProfileDialogShown" @input="userProfileDialogShown = $event" />
     <LittleSkinLoginDialog />
+    <CclAnnouncementDialog />
     <component :is="lazyDialogComponent" v-if="lazyDialogComponent" />
     <AppGamepadPrompt />
   </v-app>
@@ -83,6 +85,7 @@ import AppContextMenu from '@/views/AppContextMenu.vue'
 import AppGameExitDialog from '@/views/AppGameExitDialog.vue'
 import AppUnauthenticatedWarningDialog from '@/views/AppUnauthenticatedWarningDialog.vue'
 import LittleSkinLoginDialog from '@/components/LittleSkinLoginDialog.vue'
+import CclAnnouncementDialog from '@/views/CclAnnouncementDialog.vue'
 import UserProfileDialog from '@/components/UserProfileDialog.vue'
 import AppNotifier from '@/views/AppNotifier.vue'
 import AppSideBarClassic from '@/views/AppSideBarClassic.vue'
