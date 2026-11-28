@@ -3,7 +3,7 @@
     "productName": "CCL",
     "private": true,
     "main": "./index.js",
-    "version": "2.1.3",
+    "version": "2.1.4",
     "author": "ci010 <cijhn@hotmail.com>",
     "description": "CCL - An open-source launcher for Minecraft",
     "license": "MIT",
