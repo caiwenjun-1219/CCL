@@ -20,28 +20,6 @@
             >
               CCL
             </a>
-            <div class="d-flex items-center gap-2 mt-2">
-              <a
-                href="https://afdian.com/a/ci010"
-                target="_blank"
-                aria-label="Sponsor ci010 on Afdian"
-                class="d-flex align-center"
-              >
-                <img
-                  height="24"
-                  alt="Sponsor - Afdian"
-                  src="https://img.shields.io/badge/%E8%B5%9E%E5%8A%A9-%E7%88%B1%E5%8F%91%E7%94%B5-946ce6?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAAAAFAAAABQCAMAAAC5zwKfAAAC9FBMVEUAAACabOutif+ve/+FbLiVcuaQaOCWb+WYceiLYtuccOingvOYcOeRad6ZcuifeumXcOWhfO6jfPCmhPOUa+aLYtyac+iVbuSMZN2VbeWNZt6RaeGRauKhee2acumQauClfvGTa+OOZd6JYNqWb+Sog/SSauGPaOCogvSNZN2NZN2ngfKogvSngPOfeu6bdemTauSlfvGYcOiohPSngfKQaOCXb+aifO+XcOaVbuWTbOOogfOlf/GmgPKTbOOYceaMZN2pg/WQaN+hee2OZt6RaeCRauGKYtuSa9+bdOmog/SifO+ddumie+6Zcuelf/GSa+Ked+uYcealf/GSauGJYdqpg/SQaOCJYduOZd6jffCJX9qNZN6mgfKMZN2SauKfeOyKYtuXcOWpg/SngfOdduuJYNqQaN+WbuWUbeWmgfOLY9yUbOWlf/GZceeKYNqOaN6mgvKpgvSZceiMZNyVb+WNZt2cdumSauOfee2Wb+WPaN+geu2ddeqMZNypg/Wheu6lf/GZcueJYNmQaN+jffCTbOSphPWog/SWb+WmgPKWb+aYcuekf/Gac+iKYtuVbuWWbuSogvSSa+KWb+SOZt6ifO+feeyngfKRaeGpg/SYcOefeOujfe+VbeSMZd6ac+iJYdqVbeSog/OVbOWcdeqKYtungvObdOmfd+uSa+KNZNyeduuRaeGjfe+XcOWMY9ybdOmngvSOZt6UbuWacuiSbOKgee2bdOmMY9yVbuOmgvSUbeKviP6xif+UaueVa+mMY92ZcOyqhPaOZOKuh/2shPybcu2mf/WhePKcdO6ddeyYb+qZceirhPmpgfmedfCacuuWbuWogfemffefdfKacuqSaOaPZeSRaOKyiv+qg/iogvShd/SYbuyWbeiQZuWNZN+MYt+thvqlffSie/CXbeqTaOeKYdu1jP+jevOccvCbce6Xbeuth/uqgvukevinf/eiePaVau2WbOqXb+ahdvuUaumfdPehee+thP6bb/MemaUsAAAAvXRSTlMAAwEEAwb+/Qv6Cfv8IRAOXiwaFP7++9p3TkwvJSEeGf7++/r59+ri0MmCeFZCPjk3NDEk9PHi4NLIwq2djHp1bmNZUVBIPzwU/v38+fj49/bz6+rl5N7a0s7Hw8LAvq+opqSjlZOSiIBuaGRjYmJaVU1HREQ1KykW+/X19O7r6OXf29vV0c3Mxry4taupnpqZlZGRi4uGgXxzbWtjWlJG8/Px7ezk3dfQwbq4tp2Zh3t6cVxaVtrXz7GdcGlhNM13AAAH1ElEQVRYw+1YVVgbQRDezd2RkODu7pS6u7u7u7u7u7u7u7slkCZESUKCuxQoLVD3vnSPSyW9S6ClD33o/xHOdv6b2f1nZhPwH//xz4EFcRwi/CU2RKY/hayK0+EYdWhr6eGN6CrKCEk6qzZNtwxY0Wtxr8EtK8qIob+Zo/v6i7Ozk8U54jeFMwFeoaUAcMIA/2RxrjhZ6O9v7n/szWjA+nMXkWWbAbni3Nzk3BXDhvUSMPsT05ewuAFWGb4J9cKBb2Gt1mtktfc3PhB0eXiswhBFNycwsdB0yBwK1vkrjXh0v9hDakcCDIkSoxBIIEOpD/8DJfhIO5K5ILj43eEuY+7MMTR7H5PbfyBAFNypQAU4TCwqnN3Dwxzxaa54S2hKWLzoIEj1Vbb0sP96qtb7ZqObU5QssjsyytvmUUy3jEV5Oz+4KwL4VoNRwdTw8eGDpw8OCBoQP79VvZJzh4ca0FC/zMEFJSUszMapWwWv/cjdGdbmNqO5L1rD08LD280H61Xnr0ttr/Wq0WpZ1UnlzqX2tWk57qH7T91Uj9T5aMTip1bsJB1owutoqXExNDW1tbRjSNHrK+Gz0970avd0FfGZ0qVUr2DVvV5FvDAPj5eXNqI7QjJED3r9rQjYf06erwDCHQ/F70t7T4nQZ6aI3p9o8EeqVdZEP7iN6qB2mCHlSrk7lWb8ePex9P2l/bZfQo+6uRpq2351w10vS2pG1j+3i6t2v7pGv9z4D+2h+rVqv/V/v9F4V62f9Tq6fUUp9+rVYrC8yLgoPR+Tx1Ki800LQazWqK1HRCdMP2W+HwR5kQPTF55iT/Ttrw/t6f9G/ZMnofY67Du8x3rU2tzHcuoNH0zK1M70g62d/1Dvx+tUjrR5n+3iNhOsdI038BHz3+IwdP975Puu1947bL2P7+X3hNsy55yXqUqSbfWgGvD229qFf50OobnB1e2j7qVd72sWqWv/a18W61WlnhB8C/m0Eux5qjj0ea5H/TT0NxQ5y8rhAoEeLUB1WP//gP/x4fAYlodiWjsBdLAAAAAElFTkSuQmCC&logoSize=auto&labelColor=106ac4"
-                />
-              </a>
-              <a
-                href="https://ko-fi.com/ci010"
-                target="_blank"
-                aria-label="Support ci010 on Ko-fi"
-                class="d-flex align-center"
-              >
-                <img height="25" alt="Support on Ko-fi" :src="kofi" />
-              </a>
-            </div>
           </div>
           <v-spacer />
           <div class="d-flex align-center gap-2">
@@ -216,7 +194,6 @@ import { vSharedTooltip } from '@/directives/sharedTooltip'
 import { injection } from '@/util/inject'
 import useSWRV from 'swrv'
 import { useId } from 'vue'
-import kofi from '../assets/kofi.webp'
 import logo from '../assets/logo.webp'
 
 const env = injection(kEnvironment)
